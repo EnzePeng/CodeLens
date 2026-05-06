@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Local Coder</title>
+    <link rel="stylesheet" href="/static/styles.css?v=4" />
+  </head>
+  <body>
+    <main class="shell">
+      <!-- Sidebar -->
+      <section class="sidebar">
+        <div class="brand">
+          <div class="mark">LC</div>
+          <div>
+            <h1>Local Coder</h1>
+            <p>本地代码解读助手</p>
+          </div>
+        </div>
+
+        <!-- Folder selector -->
+        <label class="field">
+          <span>代码文件夹</span>
+          <div class="folder-input-row">
+            <input id="folderInput" spellcheck="false" readonly placeholder="点击选择文件夹…" />
+            <button id="browseBtn" type="button" title="浏览">📁</button>
+            <input type="file" id="folderPicker" webkitdirectory multiple style="display:none" />
+          </div>
+        </label>
+        <button id="setFolderBtn" type="button">加载代码库</button>
+
+        <!-- Stats -->
+        <div class="stats">
+          <div>
+            <span>当前目录</span>
+            <strong id="folderStatus">未设置</strong>
+          </div>
+          <div>
+            <span>已索引文件</span>
+            <strong id="fileCount">0</strong>
+          </div>
+          <div class="stats-full">
+            <span>搜索模式</span>
+            <strong id="embeddingMode">—</strong>
+          </div>
+        </div>
+
+        <!-- File tree -->
+        <pre id="treeView" class="tree"></pre>
+      </section>
+
+      <!-- Workspace -->
+      <section class="workspace">
+        <!-- Mode tabs -->
+        <div class="mode-tabs">
+          <button class="mode-tab active" data-mode="ask">💬 Ask</button>
+          <button class="mode-tab" data-mode="plan">📋 Plan</button>
+          <button class="mode-tab" data-mode="craft">✏️ Craft</button>
+        </div>
+
+        <!-- Messages area (scrollable) -->
+        <div id="messages" class="messages">
+          <article class="message assistant">
+            <div class="message-header">
+              <div class="role">Assistant</div>
+            </div>
+            <div class="content markdown">
+              <p>欢迎使用 Local Coder！</p>
+              <ol>
+                <li>点击左侧「📁」按钮选择代码文件夹</li>
+                <li>等待索引完成</li>
+                <li>在底部输入框提问，按 <kbd>Enter</kbd> 发送</li>
+                <li>切换右上角模式：<strong>Ask</strong>（问答） / <strong>Plan</strong>（规划） / <strong>Craft</strong>（编辑）</li>
+              </ol>
+              <p><small style="color:var(--muted)">提示：Enter 发送 · Shift+Enter 换行</small></p>
+            </div>
+          </article>
+        </div>
+
+        <!-- Composer (fixed bottom) -->
+        <form id="askForm" class="composer">
+          <div class="composer-row">
+            <textarea id="questionInput" rows="2" placeholder="输入你的代码问题… (Enter 发送 / Shift+Enter 换行)" disabled></textarea>
+            <button id="askBtn" type="submit" disabled>发送</button>
+          </div>
+          <div id="craftPanel" class="craft-panel hidden">
+            <input type="text" id="craftFile" placeholder="文件路径 (如 src/main.py)" disabled />
+            <textarea id="craftCode" rows="6" placeholder="在此输入或粘贴代码修改…" disabled></textarea>
+            <button id="applyBtn" type="button" disabled>应用修改</button>
+          </div>
+        </form>
+      </section>
+    </main>
+
+    <script src="/static/app.js?v=4"></script>
+  </body>
+</html>
