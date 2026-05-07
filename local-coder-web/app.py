@@ -90,10 +90,18 @@ SYSTEM_PROMPTS = {
     ),
     "craft": (
         "You are a code editing assistant. Answer in Simplified Chinese. "
-        "When the user asks for code modifications, output the exact code changes needed. "
-        "Format code changes as fenced code blocks with the target file path as the language "
-        "tag (e.g. ```src/main.py). Provide complete replacement functions or sections. "
-        "Be precise — only modify what is requested, preserve everything else."
+        "When the user asks for code modifications, output the exact modified file content. "
+        "IMPORTANT OUTPUT FORMAT:\n"
+        "1. Briefly explain what you changed and why (1-3 sentences)\n"
+        "2. For each modified file, output a fenced code block with the RELATIVE file path "
+        "as the language tag, like:\n"
+        "```src/main.py\n# complete file content here\n```\n"
+        "3. If only a function/section changed, still provide the COMPLETE file with the change applied, "
+        "so the user can write the entire file safely.\n"
+        "4. For multiple files, label each clearly:\n"
+        "### 修改文件: src/main.py\n```src/main.py\n...\n```\n"
+        "5. Preserve ALL existing code that is not being modified. Do NOT omit unchanged parts.\n"
+        "6. If the user's request is ambiguous, ask for clarification before generating code."
     ),
 }
 
@@ -118,6 +126,7 @@ class AskRequest(BaseModel):
     mode: str = "ask"
     file_path: str | None = None
     new_content: str | None = None
+    history: list[dict] | None = None  # 消息历史，用于共享上下文
 
 
 class CraftApplyRequest(BaseModel):
@@ -155,6 +164,39 @@ def status() -> dict[str, Any]:
         "file_count": len(state.files),
         "tree": state.tree,
         "embedding_mode": "onnx" if (_onnx_available and state.embedding_ready) else "bm25",
+    }
+
+
+class ReadFileRequest(BaseModel):
+    path: str
+
+
+@app.post("/api/read-file")
+def read_file(req: ReadFileRequest) -> dict[str, Any]:
+    """Read a file's content within the indexed repository."""
+    if state.root is None:
+        raise HTTPException(status_code=400, detail="Please set a folder first")
+
+    target = (state.root / req.path).resolve()
+    try:
+        target.relative_to(state.root.resolve())
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Path is outside the repository root")
+
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        content = target.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Read failed: {exc}") from exc
+
+    return {
+        "path": req.path,
+        "name": target.name,
+        "ext": target.suffix.lower(),
+        "size": target.stat().st_size,
+        "content": content,
     }
 
 
@@ -199,6 +241,7 @@ async def ask(req: AskRequest):
     selected = select_context(question, state)
     context = render_context(selected)
 
+    # 构建用户内容
     user_content = (
         f"Repository root: {state.root}\n\n"
         f"File tree summary:\n{state.tree[:9000]}\n\n"
@@ -213,10 +256,30 @@ async def ask(req: AskRequest):
             f"Proposed new content:\n```\n{req.new_content}\n```"
         )
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPTS[mode]},
-        {"role": "user", "content": user_content},
-    ]
+    # 构建消息列表，支持跨模式共享上下文
+    messages = [{"role": "system", "content": SYSTEM_PROMPTS[mode]}]
+
+    # 添加历史消息（最近10条，跨模式共享）
+    if req.history:
+        recent = req.history[-10:]
+        for msg in recent:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            msg_mode = msg.get("mode", "ask")
+            if not content:
+                continue
+            if role == "user":
+                # 标注来源模式，帮助 LLM 理解上下文
+                if msg_mode != mode:
+                    messages.append({"role": "user", "content": f"[{msg_mode.upper()}模式] {content}"})
+                else:
+                    messages.append({"role": "user", "content": content})
+            elif role == "assistant":
+                # 助手回复截断，避免上下文过长
+                messages.append({"role": "assistant", "content": content[:800]})
+
+    # 添加当前问题
+    messages.append({"role": "user", "content": user_content})
 
     payload = {
         "model": "local",
@@ -257,6 +320,64 @@ def craft_apply(req: CraftApplyRequest) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Write failed: {exc}") from exc
 
     return {"path": req.file_path, "bytes_written": len(req.content.encode("utf-8"))}
+
+
+@app.post("/api/reindex")
+def reindex() -> dict[str, Any]:
+    """Re-index the current repository after file modifications."""
+    if state.root is None:
+        raise HTTPException(status_code=400, detail="Please set a folder first")
+
+    files = scan_repo(state.root)
+    state.files = files
+    state.tree = build_tree(state.root, files)
+    build_bm25_index(state)
+
+    state.embedding_ready = False
+    if _onnx_available:
+        try:
+            _build_embeddings(files)
+            state.embedding_ready = True
+        except Exception as exc:
+            print(f"[Embedding] rebuild failed: {exc}")
+
+    return {
+        "folder": str(state.root),
+        "file_count": len(files),
+        "tree": state.tree,
+        "embedding_mode": "onnx" if state.embedding_ready else "bm25",
+    }
+
+
+class BrowseRequest(BaseModel):
+    path: str = ""
+
+
+@app.post("/api/browse-dirs")
+def browse_dirs(req: BrowseRequest) -> dict[str, Any]:
+    """List subdirectories of a given path for directory browsing."""
+    base = Path(req.path).expanduser().resolve() if req.path else Path.home()
+
+    # If path doesn't exist, fallback to home
+    if not base.exists() or not base.is_dir():
+        base = Path.home()
+
+    dirs: list[dict[str, str]] = []
+    try:
+        for entry in sorted(base.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
+            if entry.is_dir() and not entry.name.startswith(".") and entry.name not in IGNORE_DIRS:
+                try:
+                    dirs.append({"name": entry.name, "path": str(entry)})
+                except OSError:
+                    continue
+    except OSError:
+        pass
+
+    return {
+        "current": str(base),
+        "parent": str(base.parent) if str(base) != str(base.parent) else "",
+        "dirs": dirs,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -521,13 +642,51 @@ def extract_symbols(text: str) -> list[str]:
     return symbols
 
 
-def build_tree(root: Path, files: list[CodeFile]) -> str:
-    lines = [root.name + "/"]
-    for file in files[:700]:
-        lines.append(f"  {file.rel} ({file.size} bytes)")
-    if len(files) > 700:
-        lines.append(f"  ... {len(files) - 700} more files")
-    return "\n".join(lines)
+def build_tree(root: Path, files: list[CodeFile]) -> dict:
+    """Build a nested tree structure for the frontend to render as a collapsible tree."""
+    tree: dict = {"name": root.name, "type": "dir", "path": "", "children": {}}
+
+    for file in files[:2000]:
+        parts = Path(file.rel).parts
+        node = tree
+        for i, part in enumerate(parts):
+            if i == len(parts) - 1:
+                # File leaf
+                node["children"][part] = {
+                    "name": part,
+                    "type": "file",
+                    "path": file.rel,
+                    "size": file.size,
+                    "ext": Path(part).suffix.lower(),
+                }
+            else:
+                # Directory node
+                if part not in node["children"]:
+                    sub_path = str(Path(*parts[: i + 1]))
+                    node["children"][part] = {
+                        "name": part,
+                        "type": "dir",
+                        "path": sub_path,
+                        "children": {},
+                    }
+                node = node["children"][part]
+
+    # Convert children dicts to sorted lists
+    def _sort_node(n: dict) -> dict:
+        if n["type"] == "file":
+            return {k: v for k, v in n.items() if k != "children"}
+        child_list = sorted(
+            n["children"].values(),
+            key=lambda c: (c["type"] != "dir", c["name"].lower()),
+        )
+        return {
+            "name": n["name"],
+            "type": n["type"],
+            "path": n["path"],
+            "children": [_sort_node(c) for c in child_list],
+        }
+
+    return _sort_node(tree)
 
 
 def render_context(files: list[CodeFile]) -> str:

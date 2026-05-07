@@ -4,7 +4,10 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Local Coder</title>
-    <link rel="stylesheet" href="/static/styles.css?v=4" />
+    <link rel="stylesheet" href="/static/styles.css?v=7" />
+    <!-- highlight.js for syntax highlighting -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/vs2015.min.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   </head>
   <body>
     <main class="shell">
@@ -22,9 +25,8 @@
         <label class="field">
           <span>代码文件夹</span>
           <div class="folder-input-row">
-            <input id="folderInput" spellcheck="false" readonly placeholder="点击选择文件夹…" />
-            <button id="browseBtn" type="button" title="浏览">📁</button>
-            <input type="file" id="folderPicker" webkitdirectory multiple style="display:none" />
+            <input id="folderInput" spellcheck="false" placeholder="点击浏览选择文件夹…" />
+            <button id="browseBtn" type="button" title="浏览目录">📁</button>
           </div>
         </label>
         <button id="setFolderBtn" type="button">加载代码库</button>
@@ -45,17 +47,16 @@
           </div>
         </div>
 
-        <!-- File tree -->
-        <pre id="treeView" class="tree"></pre>
+        <!-- File tree (collapsible, like VS Code) -->
+        <div id="treeView" class="tree-view"></div>
       </section>
 
       <!-- Workspace -->
       <section class="workspace">
-        <!-- Mode tabs -->
-        <div class="mode-tabs">
-          <button class="mode-tab active" data-mode="ask">💬 Ask</button>
-          <button class="mode-tab" data-mode="plan">📋 Plan</button>
-          <button class="mode-tab" data-mode="craft">✏️ Craft</button>
+        <!-- Header bar -->
+        <div class="workspace-header">
+          <div class="workspace-title">Local Coder</div>
+          <button id="clearBtn" type="button" title="清空对话">🗑️</button>
         </div>
 
         <!-- Messages area (scrollable) -->
@@ -67,10 +68,11 @@
             <div class="content markdown">
               <p>欢迎使用 Local Coder！</p>
               <ol>
-                <li>点击左侧「📁」按钮选择代码文件夹</li>
+                <li>点击左侧「📁」按钮浏览并选择代码文件夹</li>
                 <li>等待索引完成</li>
                 <li>在底部输入框提问，按 <kbd>Enter</kbd> 发送</li>
-                <li>切换右上角模式：<strong>Ask</strong>（问答） / <strong>Plan</strong>（规划） / <strong>Craft</strong>（编辑）</li>
+                <li>在输入框左侧切换模式：<strong>Ask</strong>（问答）/ <strong>Plan</strong>（规划）/ <strong>Craft</strong>（编辑）</li>
+                <li>点击左侧文件树中的文件可预览代码</li>
               </ol>
               <p><small style="color:var(--muted)">提示：Enter 发送 · Shift+Enter 换行</small></p>
             </div>
@@ -80,18 +82,53 @@
         <!-- Composer (fixed bottom) -->
         <form id="askForm" class="composer">
           <div class="composer-row">
+            <select id="modeSelect" class="mode-select" title="切换模式">
+              <option value="ask">💬 Ask</option>
+              <option value="plan">📋 Plan</option>
+              <option value="craft">✏️ Craft</option>
+            </select>
             <textarea id="questionInput" rows="2" placeholder="输入你的代码问题… (Enter 发送 / Shift+Enter 换行)" disabled></textarea>
             <button id="askBtn" type="submit" disabled>发送</button>
-          </div>
-          <div id="craftPanel" class="craft-panel hidden">
-            <input type="text" id="craftFile" placeholder="文件路径 (如 src/main.py)" disabled />
-            <textarea id="craftCode" rows="6" placeholder="在此输入或粘贴代码修改…" disabled></textarea>
-            <button id="applyBtn" type="button" disabled>应用修改</button>
           </div>
         </form>
       </section>
     </main>
 
-    <script src="/static/app.js?v=4"></script>
+    <!-- Directory browser overlay -->
+    <div id="dirOverlay" class="dir-overlay hidden">
+      <div class="dir-dialog">
+        <div class="dir-header">
+          <h3>选择代码文件夹</h3>
+          <button id="dirCloseBtn" type="button" class="dir-close">✕</button>
+        </div>
+        <div class="dir-path-bar">
+          <input id="dirPathInput" spellcheck="false" placeholder="输入路径后按 Enter 跳转…" />
+          <button id="dirGoBtn" type="button">跳转</button>
+        </div>
+        <div id="dirList" class="dir-list"></div>
+        <div class="dir-footer">
+          <span id="dirCurrentLabel" class="dir-current-label">当前: —</span>
+          <button id="dirSelectBtn" type="button" class="dir-select-btn">选择此目录</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- File viewer overlay -->
+    <div id="fileOverlay" class="file-overlay hidden">
+      <div class="file-viewer">
+        <div class="file-viewer-header">
+          <div class="file-viewer-title" id="fileViewerTitle">文件</div>
+          <div class="file-viewer-meta" id="fileViewerMeta"></div>
+          <button id="fileCloseBtn" type="button" class="file-viewer-close">✕</button>
+        </div>
+        <div class="file-viewer-body">
+          <table class="code-table" id="codeTable">
+            <tbody id="codeBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <script src="/static/app.js?v=7"></script>
   </body>
 </html>
