@@ -105,6 +105,11 @@ SYSTEM_PROMPTS = {
     ),
 }
 
+# Default model settings
+DEFAULT_MAX_TOKENS = 4096
+DEFAULT_TEMPERATURE = 0.15
+DEFAULT_CONTEXT_LIMIT = 42000
+
 
 @dataclass
 class CodeFile:
@@ -127,6 +132,9 @@ class AskRequest(BaseModel):
     file_path: str | None = None
     new_content: str | None = None
     history: list[dict] | None = None  # 消息历史，用于共享上下文
+    max_tokens: int | None = None
+    temperature: float | None = None
+    context_limit: int | None = None  # 用户自定义的上下文字符上限
 
 
 class CraftApplyRequest(BaseModel):
@@ -164,6 +172,19 @@ def status() -> dict[str, Any]:
         "file_count": len(state.files),
         "tree": state.tree,
         "embedding_mode": "onnx" if (_onnx_available and state.embedding_ready) else "bm25",
+    }
+
+
+@app.get("/api/settings")
+def get_settings() -> dict[str, Any]:
+    """Get system prompts and default settings."""
+    return {
+        "system_prompts": SYSTEM_PROMPTS,
+        "defaults": {
+            "max_tokens": DEFAULT_MAX_TOKENS,
+            "temperature": DEFAULT_TEMPERATURE,
+            "context_limit": DEFAULT_CONTEXT_LIMIT,
+        },
     }
 
 
@@ -238,8 +259,10 @@ async def ask(req: AskRequest):
         raise HTTPException(status_code=400, detail="Question is empty")
 
     mode = req.mode if req.mode in SYSTEM_PROMPTS else "ask"
-    selected = select_context(question, state)
-    context = render_context(selected)
+    # Use user-specified context limit if provided
+    context_limit = req.context_limit if req.context_limit else None
+    selected = select_context(question, state, context_limit)
+    context = render_context(selected, context_limit)
 
     # 构建用户内容
     user_content = (
@@ -281,18 +304,23 @@ async def ask(req: AskRequest):
     # 添加当前问题
     messages.append({"role": "user", "content": user_content})
 
+    # Use user settings if provided, otherwise use mode defaults
+    temperature = req.temperature if req.temperature is not None else (0.15 if mode == "ask" else 0.25)
+    max_tokens = req.max_tokens if req.max_tokens is not None else (2400 if mode in ("plan", "craft") else 1800)
+    
     payload = {
         "model": "local",
         "messages": messages,
-        "temperature": 0.15 if mode == "ask" else 0.25,
-        "max_tokens": 2400 if mode in ("plan", "craft") else 1800,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
         "stream": True,
     }
 
     sources = [{"path": f.rel, "size": f.size, "symbols": f.symbols[:8]} for f in selected]
+    context_chars = len(context)
 
     return StreamingResponse(
-        _stream_llama(payload, sources, mode),
+        _stream_llama(payload, sources, mode, context_chars),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -381,10 +409,142 @@ def browse_dirs(req: BrowseRequest) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Terminal command execution
+# ---------------------------------------------------------------------------
+
+class ExecRequest(BaseModel):
+    command: str
+    cwd: str = ""
+
+
+class ExecResponse(BaseModel):
+    stdout: str
+    stderr: str
+    returncode: int
+
+
+@app.post("/api/exec")
+def exec_command(req: ExecRequest) -> ExecResponse:
+    """Execute a shell command and return the output."""
+    import subprocess
+    
+    # Security: block dangerous commands
+    dangerous_patterns = [
+        "rm -rf /", "mkfs", "dd if=", ">:", "|:",
+        "curl.*| sh", "wget.*| sh", "python.*| sh",
+    ]
+    cmd_lower = req.command.lower()
+    for pattern in dangerous_patterns:
+        if pattern in cmd_lower:
+            raise HTTPException(status_code=403, detail="Command not allowed for security reasons")
+    
+    # Default to workspace directory if no cwd specified
+    cwd = req.cwd if req.cwd else str(APP_DIR)
+    
+    try:
+        result = subprocess.run(
+            req.command,
+            shell=True,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=60,  # 60 second timeout
+        )
+        return ExecResponse(
+            stdout=result.stdout[:50000],  # Limit output size
+            stderr=result.stderr[:10000],
+            returncode=result.returncode,
+        )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Command timed out after 60 seconds")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Execution failed: {str(exc)}")
+
+
+# ---------------------------------------------------------------------------
+# AI Code Completion
+# ---------------------------------------------------------------------------
+
+class CompleteRequest(BaseModel):
+    code: str
+    cursor_pos: int = 0
+    file_path: str = ""
+
+
+class CompleteResponse(BaseModel):
+    completions: list[dict]
+    is_incomplete: bool = False
+
+
+@app.post("/api/complete")
+def code_complete(req: CompleteRequest) -> CompleteResponse:
+    """Get AI-powered code completions based on current context."""
+    
+    # Return empty if no code provided
+    if not req.code or not req.code.strip():
+        return CompleteResponse(completions=[])
+    
+    # Build prompt for completion
+    prompt = f"""Complete the following code. Provide up to 5 possible completions.
+Return in JSON format: [{{"text": "completion text", "description": "what this does"}}]
+
+Current code:
+```
+{req.code}
+```
+Cursor position: {req.cursor_pos}
+
+Completions:"""
+    
+    try:
+        import httpx
+        import asyncio
+        
+        # Use sync call with timeout
+        response = httpx.post(
+            LLAMA_URL,
+            json={
+                "messages": [
+                    {"role": "system", "content": "You are a code completion assistant. Return valid JSON array of completions."},
+                    {"role": "user", "content": prompt}
+                ],
+                "max_tokens": 500,
+                "temperature": 0.3,
+            },
+            timeout=30.0,
+        )
+        
+        if response.status_code != 200:
+            return CompleteResponse(completions=[])
+        
+        result = response.json()
+        content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+        
+        # Parse JSON completions
+        import re
+        json_match = re.search(r'\[[\s\S]*\]', content)
+        if json_match:
+            import json
+            try:
+                completions = json.loads(json_match.group())
+                # Format for frontend
+                formatted = [{"text": c.get("text", ""), "description": c.get("description", "")} for c in completions[:5]]
+                return CompleteResponse(completions=formatted, is_incomplete=False)
+            except:
+                pass
+        
+        return CompleteResponse(completions=[])
+        
+    except Exception as e:
+        print(f"[Complete] Error: {e}")
+        return CompleteResponse(completions=[])
+
+
+# ---------------------------------------------------------------------------
 # Streaming helper
 # ---------------------------------------------------------------------------
 
-async def _stream_llama(payload: dict, sources: list[dict], mode: str = "ask") -> AsyncIterator[str]:
+async def _stream_llama(payload: dict, sources: list[dict], mode: str = "ask", context_chars: int = 0) -> AsyncIterator[str]:
     started = time.perf_counter()
     token_count = 0
     full_text = ""
@@ -392,7 +552,7 @@ async def _stream_llama(payload: dict, sources: list[dict], mode: str = "ask") -
     def _sse(data: dict) -> str:
         return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-    yield _sse({"type": "sources", "sources": sources, "mode": mode})
+    yield _sse({"type": "sources", "sources": sources, "mode": mode, "context_chars": context_chars})
 
     try:
         async with httpx.AsyncClient(timeout=300) as client:
@@ -421,10 +581,16 @@ async def _stream_llama(payload: dict, sources: list[dict], mode: str = "ask") -
                         yield _sse({"type": "delta", "content": content})
 
     except httpx.ConnectError:
-        yield _sse({"type": "error", "message": "llama.cpp server is not running on 127.0.0.1:8080"})
+        yield _sse({"type": "error", "message": "❌ 无法连接到 llama.cpp 服务 (127.0.0.1:8080)\n请确保已运行 start-llama-server.ps1"})
         return
-    except httpx.HTTPError as exc:
-        yield _sse({"type": "error", "message": f"llama.cpp request failed: {exc}"})
+    except httpx.TimeoutException:
+        yield _sse({"type": "error", "message": "⏱️ 请求超时，模型响应时间过长"})
+        return
+    except httpx.HTTPStatusError as exc:
+        yield _sse({"type": "error", "message": f"⚠️ 模型返回错误 ({exc.response.status_code}): {exc.response.text[:200]}"})
+        return
+    except Exception as exc:
+        yield _sse({"type": "error", "message": f"❌ 未知错误: {str(exc)[:100]}"})
         return
 
     elapsed = max(time.perf_counter() - started, 0.001)
@@ -525,7 +691,14 @@ def _build_embeddings(files: list[CodeFile]) -> None:
 # Context selection
 # ---------------------------------------------------------------------------
 
-def select_context(question: str, st: AppState) -> list[CodeFile]:
+def select_context(question: str, st: AppState, context_limit: int | None = None) -> list[CodeFile]:
+    """Select relevant code files for the question.
+    
+    Args:
+        question: The user's question
+        st: Application state with indexed files
+        context_limit: Optional user-specified context character limit
+    """
     files = st.files
     if not files:
         return []
@@ -563,12 +736,15 @@ def select_context(question: str, st: AppState) -> list[CodeFile]:
         except Exception as exc:
             print(f"[Embedding] re-rank failed: {exc}")
 
+    # Use user-specified limit if provided, otherwise use default
+    max_chars = context_limit if context_limit is not None else MAX_CONTEXT_CHARS
+    
     selected: list[CodeFile] = []
     total = 0
     for f in candidates:
         selected.append(f)
         total += min(len(f.text), 7000)
-        if len(selected) >= 14 or total >= MAX_CONTEXT_CHARS:
+        if len(selected) >= 14 or total >= max_chars:
             break
     return selected
 
@@ -689,11 +865,18 @@ def build_tree(root: Path, files: list[CodeFile]) -> dict:
     return _sort_node(tree)
 
 
-def render_context(files: list[CodeFile]) -> str:
+def render_context(files: list[CodeFile], context_limit: int | None = None) -> str:
+    """Render selected files into context string.
+    
+    Args:
+        files: List of selected code files
+        context_limit: Optional user-specified character limit
+    """
+    max_chars = context_limit if context_limit is not None else MAX_CONTEXT_CHARS
     chunks: list[str] = []
     used = 0
     for file in files:
-        budget = min(9000, MAX_CONTEXT_CHARS - used)
+        budget = min(9000, max_chars - used)
         if budget <= 0:
             break
         text = file.text[:budget]

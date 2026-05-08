@@ -4,10 +4,28 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Local Coder</title>
-    <link rel="stylesheet" href="/static/styles.css?v=7" />
+    <link rel="stylesheet" href="/static/styles.css?v=14" />
     <!-- highlight.js for syntax highlighting -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/vs2015.min.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <!-- xterm.js for terminal -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+    <!-- CodeMirror 6 for code editing -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/theme/material-darker.css" />
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/python/python.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/javascript/javascript.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/xml/xml.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/css/css.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/htmlmixed/htmlmixed.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/markdown/markdown.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/go/go.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/rust/rust.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/sql/sql.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/shell/shell.js"></script>
   </head>
   <body>
     <main class="shell">
@@ -19,6 +37,10 @@
             <h1>Local Coder</h1>
             <p>本地代码解读助手</p>
           </div>
+          <button id="themeToggle" type="button" class="theme-toggle" title="切换主题">
+            <span class="sun-icon">☀️</span>
+            <span class="moon-icon">🌙</span>
+          </button>
         </div>
 
         <!-- Folder selector -->
@@ -47,6 +69,81 @@
           </div>
         </div>
 
+        <!-- Settings panel (collapsible) -->
+        <div class="settings-panel">
+          <button id="settingsToggle" type="button" class="settings-toggle">
+            <span class="settings-icon">⚙️</span>
+            <span class="settings-label">模型参数设置</span>
+            <span class="settings-arrow">▸</span>
+          </button>
+          <div id="settingsContent" class="settings-content collapsed">
+            <div class="settings-group">
+              <label class="settings-label-row">
+                <span>上下文窗口</span>
+                <span class="settings-hint">最大 token 数</span>
+              </label>
+              <select id="maxTokensSelect" class="settings-select">
+                <option value="1024">1,024</option>
+                <option value="2048">2,048</option>
+                <option value="4096" selected>4,096</option>
+                <option value="8192">8,192</option>
+                <option value="16384">16,384</option>
+              </select>
+            </div>
+            <div class="settings-group">
+              <label class="settings-label-row">
+                <span>Temperature</span>
+                <span class="settings-hint">创造性/确定性</span>
+              </label>
+              <select id="temperatureSelect" class="settings-select">
+                <option value="0.1">0.1 (精确)</option>
+                <option value="0.15" selected>0.15 (平衡)</option>
+                <option value="0.25">0.25 (创意)</option>
+                <option value="0.4">0.4 (发散)</option>
+              </select>
+            </div>
+            <div class="settings-group">
+              <label class="settings-label-row">
+                <span>上下文上限</span>
+                <span class="settings-hint">代码上下文字符数</span>
+              </label>
+              <select id="contextLimitSelect" class="settings-select">
+                <option value="21000">21,000</option>
+                <option value="32000">32,000</option>
+                <option value="42000" selected>42,000</option>
+                <option value="64000">64,000</option>
+              </select>
+            </div>
+            <div class="settings-divider"></div>
+            <div class="settings-prompts">
+              <div class="settings-prompts-title">各模式 System Prompt</div>
+              <div class="prompt-card">
+                <div class="prompt-mode ask">💬 Ask</div>
+                <div class="prompt-text" id="promptAsk">加载中…</div>
+              </div>
+              <div class="prompt-card">
+                <div class="prompt-mode plan">📋 Plan</div>
+                <div class="prompt-text" id="promptPlan">加载中…</div>
+              </div>
+              <div class="prompt-card">
+                <div class="prompt-mode craft">✏️ Craft</div>
+                <div class="prompt-text" id="promptCraft">加载中…</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Context usage indicator -->
+        <div class="context-indicator">
+          <div class="context-label">上下文余量</div>
+          <div class="context-bar">
+            <div id="contextBarUsed" class="context-bar-used" style="width: 0%"></div>
+          </div>
+          <div class="context-numbers">
+            <span id="contextUsed">0</span> / <span id="contextTotal">42,000</span> 字符
+          </div>
+        </div>
+
         <!-- File tree (collapsible, like VS Code) -->
         <div id="treeView" class="tree-view"></div>
       </section>
@@ -56,27 +153,63 @@
         <!-- Header bar -->
         <div class="workspace-header">
           <div class="workspace-title">Local Coder</div>
-          <button id="clearBtn" type="button" title="清空对话">🗑️</button>
+          <div class="workspace-actions">
+            <button id="clearBtn" type="button" title="清空对话">🗑️</button>
+            <button id="toggleTerminalBtn" type="button" title="切换终端">💻</button>
+          </div>
         </div>
 
-        <!-- Messages area (scrollable) -->
-        <div id="messages" class="messages">
-          <article class="message assistant">
-            <div class="message-header">
-              <div class="role">Assistant</div>
+        <!-- Main content area: tabs/editor + messages + terminal -->
+        <div class="workspace-content">
+          <!-- Tab bar for open files -->
+          <div class="tab-bar">
+            <div id="tabList" class="tab-list">
+              <!-- Tabs will be added dynamically -->
             </div>
-            <div class="content markdown">
-              <p>欢迎使用 Local Coder！</p>
-              <ol>
-                <li>点击左侧「📁」按钮浏览并选择代码文件夹</li>
-                <li>等待索引完成</li>
-                <li>在底部输入框提问，按 <kbd>Enter</kbd> 发送</li>
-                <li>在输入框左侧切换模式：<strong>Ask</strong>（问答）/ <strong>Plan</strong>（规划）/ <strong>Craft</strong>（编辑）</li>
-                <li>点击左侧文件树中的文件可预览代码</li>
-              </ol>
-              <p><small style="color:var(--muted)">提示：Enter 发送 · Shift+Enter 换行</small></p>
+            <div class="tab-actions">
+              <button id="newFileTabBtn" type="button" class="tab-action-btn" title="新建文件">+</button>
             </div>
-          </article>
+          </div>
+          
+          <!-- Editor area (CodeMirror) -->
+          <div id="editorArea" class="editor-area">
+            <div id="editorContainer" class="editor-container">
+              <div class="editor-welcome">
+                <p>点击左侧文件树中的文件开始编辑</p>
+                <p><small>或使用 Ctrl+N 新建文件</small></p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Messages area (scrollable) -->
+          <div id="messages" class="messages">
+            <article class="message assistant">
+              <div class="message-header">
+                <div class="role">Assistant</div>
+              </div>
+              <div class="content markdown">
+                <p>欢迎使用 Local Coder！</p>
+                <ol>
+                  <li>点击左侧「📁」按钮浏览并选择代码文件夹</li>
+                  <li>等待索引完成</li>
+                  <li>在底部输入框提问，按 <kbd>Enter</kbd> 发送</li>
+                  <li>在输入框左侧切换模式：<strong>Ask</strong>（问答）/ <strong>Plan</strong>（规划）/ <strong>Craft</strong>（编辑）</li>
+                  <li>点击左侧文件树中的文件可预览/编辑代码</li>
+                  <li>点击顶部「💻」按钮打开终端</li>
+                </ol>
+                <p><small style="color:var(--muted)">提示：Enter 发送 · Shift+Enter 换行</small></p>
+              </div>
+            </article>
+          </div>
+
+          <!-- Terminal panel (collapsible) -->
+          <div id="terminalPanel" class="terminal-panel hidden">
+            <div class="terminal-header">
+              <span class="terminal-title">终端</span>
+              <button id="closeTerminalBtn" type="button" class="terminal-close">✕</button>
+            </div>
+            <div id="terminalContainer" class="terminal-container"></div>
+          </div>
         </div>
 
         <!-- Composer (fixed bottom) -->
@@ -129,6 +262,6 @@
       </div>
     </div>
 
-    <script src="/static/app.js?v=7"></script>
+    <script src="/static/app.js?v=14"></script>
   </body>
 </html>

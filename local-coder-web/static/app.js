@@ -13,6 +13,20 @@ const messages      = document.querySelector("#messages");
 const modeSelect    = document.querySelector("#modeSelect");
 const workspace     = document.querySelector(".workspace");
 const clearBtn      = document.querySelector("#clearBtn");
+const themeToggle   = document.querySelector("#themeToggle");
+
+// Settings panel
+const settingsToggle = document.querySelector("#settingsToggle");
+const settingsContent = document.querySelector("#settingsContent");
+const maxTokensSelect = document.querySelector("#maxTokensSelect");
+const temperatureSelect = document.querySelector("#temperatureSelect");
+const contextLimitSelect = document.querySelector("#contextLimitSelect");
+const promptAsk = document.querySelector("#promptAsk");
+const promptPlan = document.querySelector("#promptPlan");
+const promptCraft = document.querySelector("#promptCraft");
+const contextUsed = document.querySelector("#contextUsed");
+const contextTotal = document.querySelector("#contextTotal");
+const contextBarUsed = document.querySelector("#contextBarUsed");
 
 // Directory browser
 const dirOverlay    = document.querySelector("#dirOverlay");
@@ -30,11 +44,40 @@ const fileViewerMeta  = document.querySelector("#fileViewerMeta");
 const fileCloseBtn    = document.querySelector("#fileCloseBtn");
 const codeBody        = document.querySelector("#codeBody");
 
+// Terminal
+const toggleTerminalBtn = document.querySelector("#toggleTerminalBtn");
+const terminalPanel     = document.querySelector("#terminalPanel");
+const closeTerminalBtn  = document.querySelector("#closeTerminalBtn");
+const terminalContainer = document.querySelector("#terminalContainer");
+const workspaceContent  = document.querySelector(".workspace-content");
+
+// Editor / Tabs
+const tabList           = document.querySelector("#tabList");
+const editorArea        = document.querySelector("#editorArea");
+const editorContainer   = document.querySelector("#editorContainer");
+const newFileTabBtn     = document.querySelector("#newFileTabBtn");
+const messagesArea      = document.querySelector("#messages");
+
 /* ─── State ───────────────────────────────────────────────────── */
 let isBusy = false;
 let currentMode = "ask";
 let messageHistory = [];
 let currentTreeData = null;  // Store tree JSON for re-rendering
+
+// Model settings (loaded from server)
+let modelSettings = {
+  maxTokens: 4096,
+  temperature: 0.15,
+  contextLimit: 42000,
+  systemPrompts: {
+    ask: "",
+    plan: "",
+    craft: ""
+  }
+};
+
+// Current context usage
+let currentContextUsed = 0;
 
 /* ─── File icon map ───────────────────────────────────────────── */
 const FILE_ICONS = {
@@ -86,6 +129,94 @@ modeSelect.addEventListener("change", () => {
   const btnLabels = { ask: "发送", plan: "规划", craft: "编辑" };
   askBtn.textContent = btnLabels[currentMode] || "发送";
 });
+
+/* ─── Settings panel (collapsible) ────────────────────────────── */
+if (settingsToggle) {
+  settingsToggle.addEventListener("click", () => {
+    const isCollapsed = settingsContent.classList.contains("collapsed");
+    if (isCollapsed) {
+      settingsContent.classList.remove("collapsed");
+      settingsToggle.querySelector(".settings-arrow").textContent = "▾";
+    } else {
+      settingsContent.classList.add("collapsed");
+      settingsToggle.querySelector(".settings-arrow").textContent = "▸";
+    }
+  });
+}
+
+// Settings change handlers
+if (maxTokensSelect) {
+  maxTokensSelect.addEventListener("change", () => {
+    modelSettings.maxTokens = parseInt(maxTokensSelect.value, 10);
+  });
+}
+if (temperatureSelect) {
+  temperatureSelect.addEventListener("change", () => {
+    modelSettings.temperature = parseFloat(temperatureSelect.value);
+  });
+}
+if (contextLimitSelect) {
+  contextLimitSelect.addEventListener("change", () => {
+    modelSettings.contextLimit = parseInt(contextLimitSelect.value, 10);
+    updateContextDisplay(0, modelSettings.contextLimit);
+  });
+}
+
+/* ─── Update context usage display ────────────────────────────── */
+function updateContextDisplay(used, total) {
+  currentContextUsed = used;
+  const totalChars = total || modelSettings.contextLimit;
+  contextUsed.textContent = used.toLocaleString();
+  contextTotal.textContent = totalChars.toLocaleString();
+  const percent = totalChars > 0 ? Math.min((used / totalChars) * 100, 100) : 0;
+  contextBarUsed.style.width = percent + "%";
+  
+  // Color based on usage
+  if (percent > 85) {
+    contextBarUsed.style.background = "#e8a8a8";
+  } else if (percent > 60) {
+    contextBarUsed.style.background = "#e8c88a";
+  } else {
+    contextBarUsed.style.background = "var(--accent)";
+  }
+}
+
+/* ─── Load settings from server ───────────────────────────────── */
+async function loadSettings() {
+  try {
+    const resp = await fetch("/api/settings");
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    
+    // Update system prompts display
+    if (data.system_prompts) {
+      modelSettings.systemPrompts = data.system_prompts;
+      if (promptAsk) promptAsk.textContent = data.system_prompts.ask || "";
+      if (promptPlan) promptPlan.textContent = data.system_prompts.plan || "";
+      if (promptCraft) promptCraft.textContent = data.system_prompts.craft || "";
+    }
+    
+    // Update default settings
+    if (data.defaults) {
+      modelSettings.maxTokens = data.defaults.max_tokens || 4096;
+      modelSettings.temperature = data.defaults.temperature || 0.15;
+      modelSettings.contextLimit = data.defaults.context_limit || 42000;
+      
+      if (maxTokensSelect) maxTokensSelect.value = modelSettings.maxTokens;
+      if (temperatureSelect) temperatureSelect.value = modelSettings.temperature;
+      if (contextLimitSelect) contextLimitSelect.value = modelSettings.contextLimit;
+    }
+    
+    updateContextDisplay(0, modelSettings.contextLimit);
+  } catch (err) {
+    console.error("Failed to load settings:", err);
+    // Use fallback prompts
+    if (promptAsk) promptAsk.textContent = "本地代码阅读助手，用中文回答问题。";
+    if (promptPlan) promptPlan.textContent = "代码架构规划助手，用中文输出结构化计划。";
+    if (promptCraft) promptCraft.textContent = "代码编辑助手，用中文输出修改内容。";
+    updateContextDisplay(0, 42000);
+  }
+}
 
 /* ─── Clear conversation ─────────────────────────────────────── */
 if (clearBtn) {
@@ -524,7 +655,10 @@ async function streamAsk(question) {
   const body = {
     question,
     mode: currentMode,
-    history: messageHistory
+    history: messageHistory,
+    max_tokens: modelSettings.maxTokens,
+    temperature: modelSettings.temperature,
+    context_limit: modelSettings.contextLimit
   };
 
   try {
@@ -542,6 +676,7 @@ async function streamAsk(question) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let sseBuffer = "";
+    let contextCharsUsed = 0;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -562,6 +697,9 @@ async function streamAsk(question) {
           if (evt.sources?.length) {
             bubble.sourcesEl.textContent = `参考文件：${evt.sources.map(s => s.path).join("，")}`;
             bubble.sourcesEl.classList.remove("hidden");
+            // Use actual context chars from server if available, otherwise estimate
+            contextCharsUsed = evt.context_chars || evt.sources.reduce((sum, s) => sum + (s.size || 0), 0);
+            updateContextDisplay(contextCharsUsed, modelSettings.contextLimit);
           }
         } else if (evt.type === "delta") {
           rawBuffer += evt.content;
@@ -583,6 +721,8 @@ async function streamAsk(question) {
     askBtn.textContent = btnLabels[currentMode] || "发送";
     setBusy(false);
     questionInput.focus();
+    // Reset context display after request completes
+    setTimeout(() => updateContextDisplay(0, modelSettings.contextLimit), 1500);
   }
 }
 
@@ -1030,3 +1170,722 @@ fetch("/api/status")
     }
   })
   .catch(() => {});
+
+/* ─── Theme toggle ────────────────────────────────────────────── */
+function initTheme() {
+  const savedTheme = localStorage.getItem("codelens-theme") || "light";
+  if (savedTheme === "dark") {
+    document.documentElement.setAttribute("data-theme", "dark");
+  }
+}
+
+function toggleTheme() {
+  const html = document.documentElement;
+  const current = html.getAttribute("data-theme");
+  const newTheme = current === "dark" ? "light" : "dark";
+  
+  if (newTheme === "dark") {
+    html.setAttribute("data-theme", "dark");
+  } else {
+    html.removeAttribute("data-theme");
+  }
+  
+  localStorage.setItem("codelens-theme", newTheme);
+}
+
+if (themeToggle) {
+  themeToggle.addEventListener("click", toggleTheme);
+}
+
+// Initialize theme on load
+initTheme();
+
+// Load settings and system prompts on startup
+loadSettings();
+
+/* ─── Terminal (xterm.js) ─────────────────────────────────────── */
+let term = null;
+let fitAddon = null;
+let currentCwd = "";
+
+function initTerminal() {
+  if (term) return;
+  
+  term = new Terminal({
+    cursorBlink: true,
+    fontSize: 13,
+    fontFamily: '"Cascadia Code", Consolas, "Courier New", monospace',
+    theme: {
+      background: '#1e1e1e',
+      foreground: '#d4d4d4',
+      cursor: '#d4d4d4',
+      selection: '#264f78',
+      black: '#000000',
+      red: '#cd3131',
+      green: '#0dbc79',
+      yellow: '#e5e510',
+      blue: '#2472c8',
+      magenta: '#bc3fbc',
+      cyan: '#11a8cd',
+      white: '#d4d4d4',
+      brightBlack: '#666666',
+      brightRed: '#f14c4c',
+      brightGreen: '#23d18b',
+      brightYellow: '#f5f543',
+      brightBlue: '#3b8eea',
+      brightMagenta: '#d670d6',
+      brightCyan: '#29b8db',
+      brightWhite: '#ffffff',
+    },
+    convertEol: true,
+    scrollback: 5000,
+  });
+  
+  fitAddon = new FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(terminalContainer);
+  fitAddon.fit();
+  
+  // Welcome message
+  term.writeln('\x1b[1;36m╔════════════════════════════════════════════════╗\x1b[0m');
+  term.writeln('\x1b[1;36m║\x1b[0m  \x1b[1;33mLocal Coder Terminal\x1b[0m                         \x1b[1;36m║\x1b[0m');
+  term.writeln('\x1b[1;36m║\x1b[0m  Type commands and press Enter to execute   \x1b[1;36m║\x1b[0m');
+  term.writeln('\x1b[1;36m║\x1b[0m  Press Ctrl+C to cancel current command      \x1b[1;36m║\x1b[0m');
+  term.writeln('\x1b[1;36m╚════════════════════════════════════════════════╝\x1b[0m');
+  term.writeln('');
+  term.write('\x1b[1;32m$\x1b[0m ');
+  
+  // Handle user input
+  let currentLine = '';
+  
+  term.onData(data => {
+    const code = data.charCodeAt(0);
+    
+    if (code === 13) { // Enter
+      term.writeln('');
+      if (currentLine.trim()) {
+        executeCommand(currentLine.trim());
+      } else {
+        term.write('\x1b[1;32m$\x1b[0m ');
+      }
+      currentLine = '';
+    } else if (code === 127 || code === 8) { // Backspace
+      if (currentLine.length > 0) {
+        currentLine = currentLine.slice(0, -1);
+        term.write('\b \b');
+      }
+    } else if (code === 3) { // Ctrl+C
+      term.writeln('^C');
+      term.write('\x1b[1;32m$\x1b[0m ');
+      currentLine = '';
+    } else if (code >= 32) { // Printable characters
+      currentLine += data;
+      term.write(data);
+    }
+  });
+  
+  // Handle resize
+  window.addEventListener('resize', () => {
+    if (fitAddon) fitAddon.fit();
+  });
+}
+
+async function executeCommand(cmd) {
+  const originalCwd = currentCwd;
+  
+  // Convert Unix commands to Windows equivalents
+  let windowsCmd = cmd;
+  const isWindows = navigator.platform.toLowerCase().includes('win');
+  
+  if (isWindows) {
+    // Common Unix -> Windows command conversions
+    const cmdMap = [
+      ['ls -la', 'dir /a'],
+      ['ls -l', 'dir /l'],
+      ['ls -F', 'dir /b'],
+      ['ls', 'dir /b'],
+      ['ll', 'dir /b'],
+      ['la', 'dir /a'],
+      ['pwd', 'cd'],
+      ['clear', 'cls'],
+      ['cat ', 'type '],
+      ['rm -rf ', 'rmdir /s /q '],
+      ['rm ', 'del /f '],
+      ['mkdir ', 'mkdir '],
+      ['touch ', 'echo. > '],
+      ['which ', 'where '],
+      ['grep ', 'findstr '],
+      ['head -n', 'more +'],
+      ['tail -n', 'for /f'],
+    ];
+    
+    for (const [unix, win] of cmdMap) {
+      if (cmd.startsWith(unix + ' ') || cmd === unix) {
+        windowsCmd = cmd.replace(unix, win);
+        break;
+      }
+    }
+  }
+  
+  // Show executing status with color
+  const displayCmd = isWindows && windowsCmd !== cmd ? `${cmd} → ${windowsCmd}` : cmd;
+  term.write(`\x1b[33m⚡ Executing: ${displayCmd}...\x1b[0m\r\n`);
+  
+  try {
+    const resp = await fetch("/api/exec", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ 
+        command: cmd,
+        cwd: currentCwd || folderInput.value || ""
+      }),
+    });
+    
+    const data = await resp.json().catch(() => ({}));
+    
+    if (resp.ok) {
+      if (data.stdout) {
+        term.writeln(data.stdout);
+      }
+      if (data.stderr) {
+        term.writeln(`\x1b[31m${data.stderr}\x1b[0m`);
+      }
+      
+      // Update cwd if command was cd
+      if (cmd.startsWith('cd ')) {
+        const newPath = cmd.slice(3).trim();
+        
+        if (newPath === '-' && originalCwd) {
+          // cd -: go to previous directory
+          currentCwd = originalCwd;
+        } else if (newPath === '~' || newPath === '') {
+          // cd ~ or cd: go to home
+          currentCwd = "";
+        } else if (newPath.startsWith('/')) {
+          // Absolute path
+          currentCwd = newPath;
+        } else if (newPath.match(/^[a-zA-Z]:/)) {
+          // Windows drive letter
+          currentCwd = newPath;
+        } else {
+          // Relative path
+          currentCwd = currentCwd ? currentCwd + '/' + newPath : newPath;
+        }
+        
+        // Show new directory
+        term.writeln(`\x1b[36m📁 ${currentCwd || '~'}\x1b[0m`);
+      }
+      
+      if (data.returncode !== 0) {
+        term.writeln(`\x1b[33m[Exit code: ${data.returncode}]\x1b[0m`);
+      }
+    } else {
+      term.writeln(`\x1b[31mError: ${data.detail || resp.statusText}\x1b[0m`);
+    }
+  } catch (err) {
+    term.writeln(`\x1b[31mFailed to execute: ${err.message}\x1b[0m`);
+  }
+  
+  term.write('\x1b[1;32m$\x1b[0m ');
+}
+
+function toggleTerminal() {
+  const isHidden = terminalPanel.classList.contains("hidden");
+  
+  if (isHidden) {
+    terminalPanel.classList.remove("hidden");
+    workspaceContent.classList.add("terminal-open");
+    
+    // Initialize terminal if not done
+    if (!term) {
+      initTerminal();
+    } else {
+      // Refit after showing
+      setTimeout(() => {
+        if (fitAddon) fitAddon.fit();
+      }, 100);
+    }
+  } else {
+    terminalPanel.classList.add("hidden");
+    workspaceContent.classList.remove("terminal-open");
+  }
+}
+
+if (toggleTerminalBtn) {
+  toggleTerminalBtn.addEventListener("click", toggleTerminal);
+}
+
+if (closeTerminalBtn) {
+  closeTerminalBtn.addEventListener("click", toggleTerminal);
+}
+
+/* ─── Tab bar + CodeMirror editor ─────────────────────────────── */
+// Open file tabs state
+let openTabs = [];  // { path, name, content, modified }
+let activeTabIndex = -1;
+let codeMirrorEditor = null;
+
+// CodeMirror mode map
+const CM_MODE_MAP = {
+  ".py": "python",
+  ".js": "javascript",
+  ".ts": "typescript",
+  ".jsx": "javascript",
+  ".tsx": "typescript",
+  ".html": "htmlmixed",
+  ".css": "css",
+  ".scss": "css",
+  ".json": "application/json",
+  ".md": "markdown",
+  ".sql": "sql",
+  ".sh": "shell",
+  ".ps1": "shell",
+  ".go": "go",
+  ".rs": "rust",
+  ".java": "text/x-java",
+  ".c": "text/x-csrc",
+  ".cpp": "text/x-c++src",
+  ".h": "text/x-csrc",
+  ".xml": "xml",
+  ".yaml": "yaml",
+  ".yml": "yaml",
+};
+
+function getCmMode(ext) {
+  return CM_MODE_MAP[ext] || "text";
+}
+
+function initCodeMirror(content = "", mode = "text") {
+  // Remove existing editor
+  const existingWrapper = editorContainer.querySelector(".CodeMirror-wrapper");
+  if (existingWrapper) {
+    existingWrapper.remove();
+  }
+  
+  // Create wrapper
+  const wrapper = document.createElement("div");
+  wrapper.className = "CodeMirror-wrapper";
+  wrapper.style.height = "100%";
+  editorContainer.appendChild(wrapper);
+  
+  // Create textarea for CodeMirror
+  const textarea = document.createElement("textarea");
+  wrapper.appendChild(textarea);
+  
+  // Initialize CodeMirror
+  codeMirrorEditor = CodeMirror.fromTextArea(textarea, {
+    mode: mode,
+    theme: "material-darker",
+    lineNumbers: true,
+    lineWrapping: true,
+    indentUnit: 4,
+    tabSize: 4,
+    indentWithTabs: false,
+    styleActiveLine: true,
+    matchBrackets: true,
+    autoCloseBrackets: true,
+    extraKeys: {
+      "Ctrl-S": saveCurrentFile,
+      "Cmd-S": saveCurrentFile,
+    },
+  });
+  
+  codeMirrorEditor.setValue(content);
+  
+  // Handle changes
+  codeMirrorEditor.on("change", () => {
+    if (activeTabIndex >= 0 && openTabs[activeTabIndex]) {
+      openTabs[activeTabIndex].content = codeMirrorEditor.getValue();
+      openTabs[activeTabIndex].modified = true;
+      updateTabUI();
+    }
+  });
+  
+  return codeMirrorEditor;
+}
+
+function openFileInTab(filePath, fileName, content) {
+  // Check if already open
+  const existingIndex = openTabs.findIndex(t => t.path === filePath);
+  
+  if (existingIndex >= 0) {
+    // Switch to existing tab
+    switchToTab(existingIndex);
+    return;
+  }
+  
+  // Get file extension
+  const ext = fileName.includes(".") ? "." + fileName.split(".").pop().toLowerCase() : "";
+  const mode = getCmMode(ext);
+  
+  // Add new tab
+  openTabs.push({
+    path: filePath,
+    name: fileName,
+    content: content,
+    modified: false,
+    mode: mode,
+  });
+  
+  switchToTab(openTabs.length - 1);
+  
+  // Show editor, hide welcome
+  const welcome = editorContainer.querySelector(".editor-welcome");
+  if (welcome) welcome.style.display = "none";
+  
+  // Adjust messages area
+  messagesArea.classList.add("has-editor");
+}
+
+function switchToTab(index) {
+  if (index < 0 || index >= openTabs.length) return;
+  
+  activeTabIndex = index;
+  const tab = openTabs[index];
+  
+  // Initialize CodeMirror with tab content
+  initCodeMirror(tab.content, tab.mode);
+  
+  // Update tab UI
+  updateTabUI();
+}
+
+function closeTab(index) {
+  if (index < 0 || index >= openTabs.length) return;
+  
+  const tab = openTabs[index];
+  
+  // If modified, ask for confirmation
+  if (tab.modified) {
+    if (!confirm(`${tab.name} 有未保存的修改，确定要关闭吗？`)) {
+      return;
+    }
+  }
+  
+  // Remove tab
+  openTabs.splice(index, 1);
+  
+  // Update active index
+  if (activeTabIndex >= openTabs.length) {
+    activeTabIndex = openTabs.length - 1;
+  }
+  
+  if (activeTabIndex >= 0) {
+    switchToTab(activeTabIndex);
+  } else {
+    // No more tabs, show welcome
+    const welcome = editorContainer.querySelector(".editor-welcome");
+    if (welcome) welcome.style.display = "block";
+    
+    // Remove editor
+    const wrapper = editorContainer.querySelector(".CodeMirror-wrapper");
+    if (wrapper) wrapper.remove();
+    codeMirrorEditor = null;
+    
+    messagesArea.classList.remove("has-editor");
+  }
+  
+  updateTabUI();
+}
+
+function updateTabUI() {
+  if (!tabList) return;
+  
+  tabList.innerHTML = "";
+  
+  openTabs.forEach((tab, index) => {
+    const tabEl = document.createElement("button");
+    tabEl.className = "tab" + (index === activeTabIndex ? " active" : "");
+    tabEl.dataset.index = index;
+    
+    const icon = document.createElement("span");
+    icon.className = "tab-icon";
+    icon.textContent = getFileIcon(tab.name.includes(".") ? "." + tab.name.split(".").pop() : "");
+    
+    const name = document.createElement("span");
+    name.className = "tab-name";
+    name.textContent = (tab.modified ? "● " : "") + tab.name;
+    
+    const closeBtn = document.createElement("span");
+    closeBtn.className = "tab-close";
+    closeBtn.textContent = "✕";
+    closeBtn.onclick = (e) => {
+      e.stopPropagation();
+      closeTab(index);
+    };
+    
+    tabEl.append(icon, name, closeBtn);
+    tabEl.onclick = () => switchToTab(index);
+    
+    tabList.appendChild(tabEl);
+  });
+}
+
+async function saveCurrentFile() {
+  if (activeTabIndex < 0 || !openTabs[activeTabIndex]) return;
+  
+  const tab = openTabs[activeTabIndex];
+  
+  try {
+    const resp = await fetch("/api/craft-apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file_path: tab.path, content: tab.content }),
+    });
+    
+    const data = await resp.json().catch(() => ({}));
+    
+    if (resp.ok) {
+      tab.modified = false;
+      updateTabUI();
+      addInfoMessage(`✅ 已保存: ${tab.name}`);
+    } else {
+      addInfoMessage(`❌ 保存失败: ${data.detail || resp.statusText}`);
+    }
+  } catch (err) {
+    addInfoMessage(`❌ 保存失败: ${err.message}`);
+  }
+}
+
+// Override file viewer click to open in editor
+const originalOpenFileViewer = openFileViewer;
+window.openFileViewer = async function(filePath, fileName, fileSize) {
+  // Load file content first
+  try {
+    const resp = await fetch("/api/read-file", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: filePath }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    
+    // Open in tab instead of viewer
+    openFileInTab(filePath, data.path || fileName, data.content || "");
+    
+  } catch (err) {
+    addInfoMessage(`❌ 打开文件失败: ${err.message}`);
+  }
+};
+
+// New file tab button
+if (newFileTabBtn) {
+  newFileTabBtn.addEventListener("click", () => {
+    const fileName = prompt("请输入新文件名:", "untitled.py");
+    if (!fileName) return;
+    
+    openFileInTab(fileName, fileName, "# 新文件\n");
+  });
+}
+
+// Keyboard shortcuts
+document.addEventListener("keydown", (e) => {
+  // Ctrl+W: close current tab
+  if ((e.ctrlKey || e.metaKey) && e.key === "w") {
+    e.preventDefault();
+    if (activeTabIndex >= 0) {
+      closeTab(activeTabIndex);
+    }
+  }
+  // Ctrl+S: save current file
+  if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+    e.preventDefault();
+    saveCurrentFile();
+  }
+  // Ctrl+Space: trigger AI completion
+  if ((e.ctrlKey || e.metaKey) && e.key === " ") {
+    e.preventDefault();
+    requestCompletion();
+  }
+});
+
+/* ─── AI Code Completion ─────────────────────────────────────── */
+let completionPanel = null;
+let completions = [];
+let selectedCompletionIndex = -1;
+
+async function requestCompletion() {
+  if (!codeMirrorEditor || activeTabIndex < 0 || !openTabs[activeTabIndex]) {
+    addInfoMessage("请先打开一个文件再使用 AI 补全");
+    return;
+  }
+  
+  const cursor = codeMirrorEditor.getCursor();
+  const code = codeMirrorEditor.getValue();
+  const cursorPos = codeMirrorEditor.indexFromPos(cursor);
+  
+  // Don't trigger if code is empty
+  if (!code || !code.trim()) {
+    return;
+  }
+  
+  // Show loading
+  showCompletionLoading();
+  
+  try {
+    const resp = await fetch("/api/complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        code: code,
+        cursor_pos: cursorPos,
+        file_path: openTabs[activeTabIndex].path || "",
+      }),
+    });
+    
+    const data = await resp.json().catch(() => ({}));
+    
+    if (resp.ok && data.completions && data.completions.length > 0) {
+      completions = data.completions;
+      showCompletionPanel(completions);
+    } else {
+      hideCompletionPanel();
+    }
+  } catch (err) {
+    console.error("Completion error:", err);
+    hideCompletionPanel();
+  }
+}
+
+function showCompletionLoading() {
+  hideCompletionPanel();
+  
+  const cursor = codeMirrorEditor.getCursor();
+  const coords = codeMirrorEditor.cursorCoords(cursor, "page");
+  
+  completionPanel = document.createElement("div");
+  completionPanel.className = "completion-panel";
+  completionPanel.style.left = coords.left + "px";
+  completionPanel.style.top = (coords.top + 20) + "px";
+  completionPanel.innerHTML = '<div class="completion-loading">🤔 思考中...</div>';
+  
+  document.body.appendChild(completionPanel);
+}
+
+function showCompletionPanel(items) {
+  hideCompletionPanel();
+  
+  if (items.length === 0) return;
+  
+  const cursor = codeMirrorEditor.getCursor();
+  const coords = codeMirrorEditor.cursorCoords(cursor, "page");
+  
+  completionPanel = document.createElement("div");
+  completionPanel.className = "completion-panel";
+  completionPanel.style.left = coords.left + "px";
+  completionPanel.style.top = (coords.top + 20) + "px";
+  
+  const header = document.createElement("div");
+  header.className = "completion-header";
+  header.textContent = "AI 建议 (Tab 选中)";
+  completionPanel.appendChild(header);
+  
+  items.forEach((item, index) => {
+    const div = document.createElement("div");
+    div.className = "completion-item";
+    div.dataset.index = index;
+    
+    const text = document.createElement("div");
+    text.className = "completion-text";
+    text.textContent = item.text.substring(0, 100);
+    
+    div.appendChild(text);
+    
+    if (item.description) {
+      const desc = document.createElement("div");
+      desc.className = "completion-desc";
+      desc.textContent = item.description;
+      div.appendChild(desc);
+    }
+    
+    div.onclick = () => applyCompletion(index);
+    div.onmouseenter = () => selectCompletion(index);
+    
+    completionPanel.appendChild(div);
+  });
+  
+  document.body.appendChild(completionPanel);
+  selectedCompletionIndex = 0;
+  updateCompletionSelection();
+}
+
+function hideCompletionPanel() {
+  if (completionPanel) {
+    completionPanel.remove();
+    completionPanel = null;
+  }
+  completions = [];
+  selectedCompletionIndex = -1;
+}
+
+function selectCompletion(index) {
+  selectedCompletionIndex = index;
+  updateCompletionSelection();
+}
+
+function updateCompletionSelection() {
+  if (!completionPanel) return;
+  
+  const items = completionPanel.querySelectorAll(".completion-item");
+  items.forEach((item, i) => {
+    if (i === selectedCompletionIndex) {
+      item.classList.add("selected");
+    } else {
+      item.classList.remove("selected");
+    }
+  });
+}
+
+function applyCompletion(index) {
+  if (index < 0 || index >= completions.length) return;
+  
+  const completion = completions[index];
+  const cursor = codeMirrorEditor.getCursor();
+  
+  // Insert completion text at cursor
+  codeMirrorEditor.replaceSelection(completion.text);
+  
+  hideCompletionPanel();
+  codeMirrorEditor.focus();
+}
+
+// Handle Tab key to accept completion
+const originalInitCodeMirror = initCodeMirror;
+window.initCodeMirror = function(content = "", mode = "text") {
+  const editor = originalInitCodeMirror(content, mode);
+  
+  // Add Tab handler for completion
+  editor.addKeyMap({
+    "Tab": function(cm) {
+      if (completions.length > 0 && selectedCompletionIndex >= 0) {
+        applyCompletion(selectedCompletionIndex);
+        return;
+      }
+      // Default: insert tab
+      cm.replaceSelection("  ", "end");
+    },
+    "Escape": function(cm) {
+      hideCompletionPanel();
+    },
+    "Down": function(cm) {
+      if (completionPanel && completions.length > 0) {
+        selectCompletion((selectedCompletionIndex + 1) % completions.length);
+        return true;
+      }
+    },
+    "Up": function(cm) {
+      if (completionPanel && completions.length > 0) {
+        selectCompletion((selectedCompletionIndex - 1 + completions.length) % completions.length);
+        return true;
+      }
+    },
+    "Enter": function(cm) {
+      if (completionPanel && completions.length > 0 && selectedCompletionIndex >= 0) {
+        applyCompletion(selectedCompletionIndex);
+        return true;
+      }
+    },
+  });
+  
+  return editor;
+};
