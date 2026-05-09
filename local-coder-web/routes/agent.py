@@ -8,10 +8,15 @@ import json
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
+from config import (
+    MAX_CONSECUTIVE_REJECTIONS,
+    MAX_RECOVERY_ATTEMPTS,
+)
 from core.agent import get_agent, AgentConfig, AgentPhase
 from core.tools import ToolRegistry
 from models import AgentStartRequest, AgentActionRequest, AgentStatusResponse, state
 from services.indexer import build_bm25_index
+from services.memory import MemoryStore
 from services.search import select_context, render_context
 
 
@@ -177,8 +182,6 @@ async def execute_agent_stream(task_id: str) -> StreamingResponse:
             yield _sse({"type": "error", "message": "Task not found"})
             return
 
-        tools = ToolRegistry.list_tools()
-
         # Build context
         idf, avg_dl = build_bm25_index(state.files)
         ort_sess, ort_tok = _get_onnx()
@@ -203,20 +206,30 @@ async def execute_agent_stream(task_id: str) -> StreamingResponse:
         })
 
         if not intent.requires_plan:
-            # Simple task: direct ReAct loop
+            # Simple task: ReAct loop with self-reflection and error recovery
+            memory = MemoryStore(working_size=4, episodic_max=8)
+            user_msg = f"Repository: {state.root}\n\nContext:\n{context}\n\nTask: {task.user_query}"
+            tools = ToolRegistry.recommend_tools(user_msg, max_tools=6)
             messages = [
                 {"role": "system", "content": agent.generate_system_prompt(tools)},
-                {"role": "user", "content": f"Repository: {state.root}\n\nContext:\n{context}\n\nTask: {task.user_query}"},
+                {"role": "user", "content": user_msg},
             ]
 
             yield _sse({"type": "status", "status": "running", "message": "Starting Agent execution (simple mode)"})
 
             try:
+                consecutive_rejections = 0
+                recovery_attempts = 0
+                llm_response = ""
+
                 while agent.should_continue(task_id):
+                    # Build messages from episodic memory + working memory
+                    memory_context = memory.get_context()
+
                     yield _sse({"type": "thinking", "message": "LLM is thinking..."})
 
                     try:
-                        llm_response = await agent.call_llm(messages, tools)
+                        llm_response = await agent.call_llm(memory_context + messages[1:], tools)
                     except Exception as e:
                         yield _sse({"type": "error", "message": f"LLM call failed: {e}"})
                         agent.stop_task(task_id, f"LLM error: {e}")
@@ -233,9 +246,43 @@ async def execute_agent_stream(task_id: str) -> StreamingResponse:
                         yield _sse({"type": "done", "result": llm_response})
                         break
 
+                    if len(tool_calls) > 1:
+                        yield _sse({
+                            "type": "batch_tool_call",
+                            "count": len(tool_calls),
+                            "calls": [
+                                {"tool": tc.get("tool"), "args": tc.get("args")}
+                                for tc in tool_calls
+                            ],
+                        })
+
                     for tool_call in tool_calls:
                         tool_name = tool_call.get("tool", "")
                         tool_args = tool_call.get("args", {})
+
+                        # Self-reflection before execution
+                        yield _sse({"type": "thinking", "message": "Reflecting on next action..."})
+                        reflection = await agent.reflect_before_action(
+                            tool_name=tool_name,
+                            tool_args=tool_args,
+                            user_query=task.user_query,
+                            recent_messages=messages,
+                        )
+                        yield _sse({"type": "reflection", **reflection})
+
+                        if not reflection["approved"]:
+                            consecutive_rejections += 1
+                            if consecutive_rejections >= MAX_CONSECUTIVE_REJECTIONS:
+                                yield _sse({"type": "warning", "message": f"Multiple rejections ({consecutive_rejections}), proceeding anyway"})
+                            else:
+                                reconsider_prompt = (
+                                    f"Your self-reflection identified issues: {reflection['reflection']}\n"
+                                    f"Reconsider your approach. Output a new tool call or natural language response."
+                                )
+                                messages.append({"role": "user", "content": reconsider_prompt})
+                                continue
+                        else:
+                            consecutive_rejections = 0
 
                         yield _sse({"type": "tool_call", "tool": tool_name, "args": tool_args})
 
@@ -247,12 +294,50 @@ async def execute_agent_stream(task_id: str) -> StreamingResponse:
                             result = ToolRegistry.execute(tool_name, **tool_args)
                             agent.update_step(task_id, step.step_id, "success", result)
                             yield _sse({"type": "tool_result", "tool": tool_name, "result": result[:1000]})
+                            recovery_attempts = 0  # Reset on success
                         except Exception as e:
                             error_msg = str(e)
                             agent.update_step(task_id, step.step_id, "failed", error=error_msg)
                             yield _sse({"type": "tool_error", "tool": tool_name, "error": error_msg})
 
+                            # Error recovery
+                            if recovery_attempts < MAX_RECOVERY_ATTEMPTS:
+                                yield _sse({"type": "thinking", "message": f"Analyzing error, attempting recovery (attempt {recovery_attempts + 1}/{MAX_RECOVERY_ATTEMPTS})..."})
+                                recovery = await agent.recover_from_error(
+                                    tool_name=tool_name,
+                                    error=error_msg,
+                                    context_summary=context[:500],
+                                    tool_args=tool_args,
+                                )
+                                can_continue = recovery.get("can_continue", False)
+                                if not can_continue:
+                                    task.status = "failed"
+                                    task.result = f"Failed: {error_msg}. Cannot recover."
+                                    yield _sse({"type": "error", "message": task.result})
+                                    break
+                                messages.append({
+                                    "role": "user",
+                                    "content": (
+                                        f"Previous action failed: {error_msg}\n"
+                                        f"Analysis: {recovery.get('analysis', '')}\n"
+                                        f"Retry approach: {json.dumps(recovery.get('retry_args', tool_args), ensure_ascii=False)}\n"
+                                        f"Execute a corrected action or provide a better alternative."
+                                    ),
+                                })
+                                recovery_attempts += 1
+                            else:
+                                task.status = "failed"
+                                task.result = f"Max recovery attempts ({MAX_RECOVERY_ATTEMPTS}) reached for: {tool_name}"
+                                yield _sse({"type": "error", "message": task.result})
+                                break
+
                         messages.append({"role": "user", "content": f"Tool {tool_name} result:\n{result[:2000]}"})
+                        memory.add(step.step_id, tool_name, result, True, llm_response)
+
+                    # Recompute tools based on accumulated conversation context
+                    last_content = messages[-1].get("content", "") if messages else ""
+                    tools = ToolRegistry.recommend_tools(last_content, max_tools=6)
+                    messages[0] = {"role": "system", "content": agent.generate_system_prompt(tools)}
 
                     if len(task.steps) >= agent.config.max_steps:
                         task.status = "failed"
@@ -284,12 +369,17 @@ Output a structured plan in the following JSON format inside a ```plan code bloc
       "path": "relative/path/to/file",
       "diff": "unified diff showing changes",
       "old_content": "original file content (first 500 chars)",
-      "new_content": "complete new file content"
+      "new_content": "complete new file content",
+      "dependencies": ["path/to/dependency1", ...],
+      "verification": "how to verify this change is correct"
     }}
   ]
 }}
 
-Be specific about file paths and include the complete new file content for each file."""
+Rules:
+- List dependencies: files that must be applied BEFORE this file
+- Provide clear verification criteria for each file
+- Be specific about file paths and include the complete new file content for each file."""
 
             try:
                 plan_response = await agent.call_llm(

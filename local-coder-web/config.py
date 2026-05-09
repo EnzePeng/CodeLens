@@ -98,6 +98,22 @@ SYSTEM_PROMPTS: dict[str, str] = {
 AGENT_MAX_STEPS = 15
 AGENT_DEFAULT_TIMEOUT = 60  # seconds
 
+# Self-reflection configuration
+REFLECTION_MAX_TOKENS = 256
+REFLECTION_TEMPERATURE = 0.1
+MAX_CONSECUTIVE_REJECTIONS = 2
+
+# Error recovery configuration
+RECOVERY_MAX_TOKENS = 512
+RECOVERY_TEMPERATURE = 0.1
+MAX_RECOVERY_ATTEMPTS = 2
+
+# Memory configuration
+MEMORY_WORKING_SIZE = 4
+MEMORY_EPISODIC_MAX = 8
+SUMMARIZE_MAX_TOKENS = 256
+SUMMARIZE_TEMPERATURE = 0.1
+
 # Security: dangerous command patterns
 DANGEROUS_PATTERNS = [
     "rm -rf /", "mkfs", "dd if=", ">:", "|:",

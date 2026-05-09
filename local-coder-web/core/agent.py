@@ -19,7 +19,12 @@ from typing import Any, Optional
 
 import httpx
 
-from config import AGENT_MAX_STEPS, AGENT_DEFAULT_TIMEOUT, LLAMA_URL, SYSTEM_PROMPTS
+from config import (
+    AGENT_MAX_STEPS, AGENT_DEFAULT_TIMEOUT, LLAMA_URL, SYSTEM_PROMPTS,
+    REFLECTION_MAX_TOKENS, REFLECTION_TEMPERATURE, MAX_CONSECUTIVE_REJECTIONS,
+    RECOVERY_MAX_TOKENS, RECOVERY_TEMPERATURE, MAX_RECOVERY_ATTEMPTS,
+    SUMMARIZE_MAX_TOKENS, SUMMARIZE_TEMPERATURE,
+)
 from logger import logger
 from models import AgentStep, AgentState, state
 
@@ -49,7 +54,9 @@ class FileChangePlan:
     new_content: str
     old_content_hash: str = ""
     user_approved: bool = False
-    status: str = "pending"  # pending / approved / rejected / applied / error
+    status: str = "pending"  # pending / approved / rejected / applied / error / verification_failed / skipped
+    dependencies: list[str] = field(default_factory=list)
+    verification: str = ""
 
 
 @dataclass
@@ -332,8 +339,9 @@ When you need to use a tool, output exactly one JSON object per tool call:
 {{"tool": "tool_name", "args": {{"param1": "value1"}}}}
 
 Rules:
-- Use ONE tool call per response (do not batch multiple tool calls)
-- After each tool call, analyze the result before deciding the next action
+- You may batch up to 3 independent read-only tool calls per response (e.g., read_file, search_files, list_directory)
+- Write operations (write_file, edit_file, apply_diff) must NOT be batched
+- After each tool call batch, analyze all results before deciding the next action
 - If multiple changes are needed, do them one at a time
 - When task is complete, respond with a natural language summary (no tool call)
 - Think step by step: observe -> think -> act -> observe
@@ -425,6 +433,8 @@ Think step by step."""
                         diff=file_data.get("diff", ""),
                         old_content=file_data.get("old_content", ""),
                         new_content=file_data.get("new_content", ""),
+                        dependencies=file_data.get("dependencies", []),
+                        verification=file_data.get("verification", ""),
                     )
                     files.append(fcp)
                 return AgentPlan(
@@ -460,7 +470,7 @@ Think step by step."""
         return None
 
     def apply_plan(self, task_id: str) -> str:
-        """Apply all approved file changes in the plan.
+        """Apply all approved file changes in the plan with dependency ordering and verification.
 
         Returns a summary of applied changes.
         """
@@ -472,18 +482,38 @@ Think step by step."""
         if task:
             task.phase = AgentPhase.APPLYING
 
+        # Topological sort by dependencies
+        ordered_files = self._topo_sort_files(plan.approved_files)
         results = []
+        applied_paths: set[str] = set()
+
         from core.tools import ToolRegistry
 
-        for fcp in plan.approved_files:
+        for fcp in ordered_files:
+            # Check dependencies
+            for dep in fcp.dependencies:
+                if dep not in applied_paths:
+                    results.append(f"SKIPPED: {fcp.path} -- dependency {dep} not applied")
+                    fcp.status = "skipped"
+                    continue
+
             step = self.add_step(task_id, "apply_file", {"path": fcp.path})
             if not step:
                 continue
 
             try:
-                # Use write_file tool to apply changes
                 ToolRegistry.execute("write_file", path=fcp.path, content=fcp.new_content)
                 fcp.status = "applied"
+                applied_paths.add(fcp.path)
+
+                # Verification gate
+                if fcp.verification:
+                    if not self._verify_change(fcp):
+                        results.append(f"VERIFICATION_FAILED: {fcp.path}")
+                        fcp.status = "verification_failed"
+                        applied_paths.discard(fcp.path)  # dependents can't use this
+                        continue
+
                 self.update_step(task_id, step.step_id, "success", output=f"Applied to {fcp.path}")
                 results.append(f"Applied: {fcp.path}")
             except Exception as e:
@@ -502,6 +532,175 @@ Think step by step."""
             task.phase = AgentPhase.DONE
 
         return "Plan applied: " + "; ".join(results)
+
+    def _topo_sort_files(self, files: list[FileChangePlan]) -> list[FileChangePlan]:
+        """Sort files topologically by dependencies."""
+        file_map = {f.path: f for f in files}
+        visited: set[str] = set()
+        result: list[FileChangePlan] = []
+
+        def visit(fcp: FileChangePlan):
+            if fcp.path in visited:
+                return
+            visited.add(fcp.path)
+            for dep in fcp.dependencies:
+                if dep in file_map:
+                    visit(file_map[dep])
+            result.append(fcp)
+
+        for fcp in files:
+            visit(fcp)
+        return result
+
+    def _verify_change(self, fcp: FileChangePlan) -> bool:
+        """Verify a file change by reading back and comparing."""
+        if state.root is None:
+            return True
+        target = state.root / fcp.path
+        try:
+            current = target.read_text(encoding="utf-8", errors="replace")
+            return current == fcp.new_content
+        except OSError:
+            return False
+
+    # ---- Self-reflection ----
+
+    async def reflect_before_action(
+        self,
+        tool_name: str,
+        tool_args: dict,
+        user_query: str,
+        recent_messages: list[dict],
+    ) -> dict:
+        """Self-reflection before executing a tool call."""
+        recent_history = "\n".join(
+            f"{m['role']}: {str(m.get('content', ''))[:200]}"
+            for m in recent_messages[-6:]
+        )
+        prompt = (
+            f"Review the planned action. Answer in Simplified Chinese.\n\n"
+            f"Planned action: {tool_name} with args: {json.dumps(tool_args, ensure_ascii=False)[:500]}\n"
+            f"Current task: {user_query}\n"
+            f"Recent history:\n{recent_history}\n\n"
+            f"Critique this action:\n"
+            f"1. Is this the right next step? (APPROVED/REJECTED)\n"
+            f"2. What risks or potential issues exist?\n"
+            f"3. Is there a safer or more efficient alternative?\n\n"
+            f"Output format:\n"
+            f"APPROVED or REJECTED\n"
+            f"Reason: <brief explanation>\n"
+            f"Risk: low/medium/high"
+        )
+        payload = {
+            "model": "local",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": REFLECTION_TEMPERATURE,
+            "max_tokens": REFLECTION_MAX_TOKENS,
+            "stream": False,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=self.config.timeout) as client:
+                response = await client.post(LLAMA_URL, json=payload)
+                response.raise_for_status()
+                result = response.json()
+                content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+        except Exception as e:
+            logger.warning(f"[Reflection] Failed: {e}")
+            return {"reflection": "Reflection failed", "approved": True, "risk_level": "low"}
+
+        text = content.upper()
+        approved = "APPROVED" in text and "REJECTED" not in text.replace("APPROVED/REJECTED", "")
+        risk = "low"
+        for level in ["high", "medium", "low"]:
+            if level in content.lower():
+                risk = level
+                break
+
+        return {"reflection": content.strip(), "approved": approved, "risk_level": risk}
+
+    # ---- Error recovery ----
+
+    async def recover_from_error(
+        self,
+        tool_name: str,
+        error: str,
+        context_summary: str,
+        tool_args: dict,
+    ) -> dict:
+        """Analyze a tool failure and produce a corrected action."""
+        prompt = (
+            f"The previous action failed with this error:\n\n"
+            f"Tool: {tool_name}\n"
+            f"Error: {error[:500]}\n"
+            f"Context: {context_summary[:500]}\n\n"
+            f"Provide:\n"
+            f"1. Root cause analysis (1-2 sentences)\n"
+            f"2. A corrected action (new tool call in JSON format)\n"
+            f"3. If the task cannot be completed, explain why\n\n"
+            f"Output in JSON format:\n"
+            f'{{"analysis": "...", "can_continue": true/false, "retry_args": {json.dumps(tool_args, ensure_ascii=False)}}}'
+        )
+        payload = {
+            "model": "local",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": RECOVERY_TEMPERATURE,
+            "max_tokens": RECOVERY_MAX_TOKENS,
+            "stream": False,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=self.config.timeout) as client:
+                response = await client.post(LLAMA_URL, json=payload)
+                response.raise_for_status()
+                result = response.json()
+                content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+                # Try to parse JSON from response
+                json_match = re.search(r'\{[^{}]*"analysis"[^{}]*\}', content, re.DOTALL)
+                if json_match:
+                    parsed = json.loads(json_match.group())
+                    return parsed
+        except Exception as e:
+            logger.warning(f"[Recovery] Failed to parse recovery: {e}")
+
+        return {"analysis": content[:200] if 'content' in dir() else str(e), "can_continue": False}
+
+    # ---- Step summarization ----
+
+    async def summarize_step(self, tool_name: str, result: str, thought: str) -> dict:
+        """Compress a tool execution result into a short summary."""
+        prompt = (
+            f"Summarize this agent step in 1-2 sentences.\n"
+            f"Extract up to 3 key findings or insights.\n\n"
+            f"Tool: {tool_name}\n"
+            f"Result: {result[:1000]}\n"
+            f"Thought: {thought[:500]}\n\n"
+            f'Output JSON: {{"summary": "...", "key_findings": ["...", "..."]}}'
+        )
+        payload = {
+            "model": "local",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": SUMMARIZE_TEMPERATURE,
+            "max_tokens": SUMMARIZE_MAX_TOKENS,
+            "stream": False,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=self.config.timeout) as client:
+                response = await client.post(LLAMA_URL, json=payload)
+                response.raise_for_status()
+                result_data = response.json()
+                content = result_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+                json_match = re.search(r'\{[^{}]*"summary"[^{}]*\}', content, re.DOTALL)
+                if json_match:
+                    return json.loads(json_match.group())
+        except Exception as e:
+            logger.warning(f"[Summarize] Failed: {e}")
+
+        return {"summary": result[:200], "key_findings": []}
+
 
     def execute_agent_stream(self, task_id: str):
         """Execute agent task with streaming updates.
