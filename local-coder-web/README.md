@@ -1,25 +1,35 @@
 # Local Coder Web
 
-基于本地 llama.cpp 的轻量级代码阅读助手，支持语义搜索、流式输出、多模式交互。
+基于本地 llama.cpp 的轻量级代码阅读助手，支持语义搜索、流式输出、Agent 自主规划执行。
 
 ## 功能特性
 
-- **语义搜索**：BM25 增强检索 + ONNX 语义重排（可选）
+- **语义搜索**：BM25 增强检索 + ONNX 语义重排（可选），支持 camelCase 分词
 - **流式输出**：实时显示 thinking，回答逐字渲染
 - **多模式交互**：
   - **Ask** 💬 — 问答模式，解答代码相关问题
   - **Plan** 📋 — 规划模式，分析代码结构并生成实现方案，支持 Build 一键执行
   - **Craft** ✏️ — 编辑模式，可直接修改代码文件
-- **共享上下文**：跨模式对话历史共享，最近 10 条消息作为上下文
+  - **Agent** 🤖 — 自主 Agent 模式，支持 Plan-then-Apply 架构
+- **Agent 模式能力**：
+  - **Plan-then-Apply**：先生成修改计划，逐项预览 diff，确认后批量执行
+  - **Phase 指示器**：实时显示分析 → 规划 → 预览 → 执行 → 完成
+  - **Diff 预览**：逐项 approve/reject，支持全部批准/全部拒绝
+  - **11 种工具**：read_file, write_file, edit_file, apply_diff, search_files, list_directory, run_command, git_operation, undo_edit, diff_preview, file_operations, code_analysis, test, project
+  - **安全白名单**：run_command 支持命令白名单 + 危险模式检测
+  - **Undo/Redo**：持久化编辑历史到 JSON，支持撤销和重做
+  - **执行可视化**：实时显示步骤时间线、工具调用、执行进度
+- **对话历史管理**：`ChatHistory` 服务，跨会话上下文管理，自动裁剪
 - **目录选择**：内置文件夹浏览器，一键选择代码目录
 - **离线运行**：无需联网，本地模型即可工作
 - **深色主题**：点击标题栏太阳/月亮图标切换明暗主题，主题偏好自动保存
 - **模型参数设置**：可调整 max_tokens、temperature、context_limit
 - **上下文余量显示**：实时显示已用/总字符数，颜色随使用率变化
-- **集成终端**：内置 xterm.js 终端，支持执行 shell 命令（cd、ls、git 等）
+- **集成终端**：内置 xterm.js 终端，支持 32 种 Unix→Windows 命令转换
 - **代码编辑器**：集成 CodeMirror 编辑器，支持语法高亮、多标签页编辑
 - **文件标签页**：点击文件树打开标签页，Ctrl+S 保存，Ctrl+W 关闭
 - **AI 代码补全**：Ctrl+Space 触发 AI 补全建议，支持 Tab/Enter 确认
+- **增量索引**：文件哈希检测，只处理变更文件
 
 ## 快速开始
 
@@ -44,7 +54,7 @@
 1. 点击侧边栏「📁」按钮选择代码目录，或手动输入路径
 2. 点击「加载代码库」，等待索引完成
 3. 在底部输入框提问，按 Enter 发送
-4. 切换顶部模式标签：Ask / Plan / Craft
+4. 切换顶部模式标签：Ask / Plan / Craft / Agent
 
 ### 快捷键
 
@@ -63,16 +73,44 @@
 
 ```
 local-coder-web/
-├── app.py              # FastAPI 后端（搜索、流式输出、Craft API）
-├── README.md           # 本文档
+├── app.py              # 入口：加载配置、注册路由、启动
+├── config.py           # 配置常量集中管理
+├── models/
+│   └── __init__.py     # Pydantic 模型 + CodeFile + extract_symbols
+├── core/
+│   ├── agent.py        # AgentLoop（Plan-then-Apply 架构）
+│   ├── tools/
+│   │   ├── base.py     # Tool ABC + ToolRegistry
+│   │   ├── read_file.py
+│   │   ├── write_file.py
+│   │   ├── edit_file.py
+│   │   ├── apply_diff.py
+│   │   ├── diff_preview.py    # 新增：Diff 预览
+│   │   ├── search_files.py
+│   │   ├── list_directory.py
+│   │   ├── run_command.py     # 命令白名单安全
+│   │   ├── git_operation.py
+│   │   ├── undo_edit.py      # JSON 持久化 + Redo
+│   │   ├── file_operations.py # 新增：copy/move/delete/mkdir
+│   │   ├── code_analysis.py   # 新增：count_lines/find_references
+│   │   ├── test.py             # 新增：运行测试
+│   │   └── project.py          # 新增：读取配置/包信息
+├── services/
+│   ├── indexer.py      # 统一索引：scan + BM25 + embeddings
+│   ├── search.py       # BM25 + ONNX 语义搜索
+│   ├── chat_history.py # 对话历史管理（新增）
+│   └── file_watcher.py # 文件监控
+├── routes/
+│   ├── main.py         # UI + 状态 + 设置
+│   ├── ask.py          # /api/ask + /api/craft-apply
+│   ├── files.py        # /api/set-folder + /api/read-file + /api/exec
+│   ├── complete.py     # /api/complete
+│   └── agent.py        # /api/agent/*（Agent 生命周期）
 ├── static/
 │   ├── index.html      # 页面入口
-│   ├── app.js          # 前端逻辑（流式渲染、Markdown、Build 执行）
-│   └── styles.css      # 样式（三模式主题色）
-└── models/             # ONNX 语义模型（可选，不纳入 git）
-    └── bge-small-zh-v1.5/
-        ├── model.onnx
-        └── tokenizer.json
+│   ├── app.js          # 前端逻辑（Agent Phase 面板、Diff 预览）
+│   └── styles.css      # 样式（含 Agent Phase/Preview 样式）
+└── tests/              # 71 个测试用例
 ```
 
 ## 模式说明
@@ -185,14 +223,13 @@ ONNX 模型参数：
 }
 ```
 
-### SSE 流式事件
-
-| 事件类型 | 说明 |
-|----------|------|
-| `sources` | 返回参考文件列表和当前模式 |
-| `delta` | 增量文本片段 |
-| `done` | 完成事件，含完整回答、thinking、性能指标 |
-| `error` | 错误信息 |
+| `/api/agent/start` | POST | 启动 Agent 任务 |
+| `/api/agent/status/{task_id}` | GET | 获取任务状态 |
+| `/api/agent/action` | POST | 用户确认/拒绝（approve/reject/cancel） |
+| `/api/agent/stop/{task_id}` | POST | 停止 Agent 任务 |
+| `/api/agent/execute/{task_id}` | POST | 执行 Agent（SSE 流式，含 phase_change/plan_data/apply_progress 事件） |
+| `/api/agent/tools` | GET | 列出可用工具 |
+| `/api/agent/undo` | POST | 撤销编辑 |
 
 ## System Prompt
 
@@ -287,7 +324,18 @@ node_modules, dist, build, .next, .nuxt, .turbo,
 
 ## 版本历史
 
-### v0.5 (2026-05-08)
+### v0.6 (2026-05-09) - 全面重构 (Cursor-级别 Agent)
+- 🏗️ **架构重构**：拆分 routes 模块（ask.py/files.py/complete.py），新建 services/indexer.py 统一索引逻辑
+- 🤖 **Plan-then-Apply**：Agent 模式支持计划生成、Diff 预览、逐项 approve/reject、批量执行
+- 📊 **Phase 指示器**：实时显示 parsing → planning → preview → applying → done 阶段
+- 🔧 **工具系统增强**：14 种工具，支持统一注册、命令白名单、JSON 持久化 undo/redo
+- 🔍 **搜索改进**：embedding 窗口扩大到 4000 字符，camelCase 分词，增强符号提取
+- 💬 **对话历史**：ChatHistory 服务，跨会话上下文管理
+- 🧪 **测试覆盖**：从 39 到 71 个测试用例，新增 indexer/search/chat_history/diff 测试
+- ⚡ **性能优化**：工具统一注册入口、新增 file_operations/code_analysis/test/project 工具
+- 🛡️ **安全增强**：run_command 命令白名单、危险命令模式检测
+
+### v0.5.2 (2026-05-08) - Bug 修复
 - ✨ **AI 代码补全**：Ctrl+Space 触发 AI 补全建议
 - 🤖 **智能建议**：基于 LLM 生成代码补全，Tab/Enter 确认
 - ⌨️ **补全导航**：上下键选择，Escape 关闭面板

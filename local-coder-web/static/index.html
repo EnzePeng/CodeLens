@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Local Coder</title>
-    <link rel="stylesheet" href="/static/styles.css?v=14" />
+    <link rel="stylesheet" href="/static/styles.css?v=15" />
     <!-- highlight.js for syntax highlighting -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/vs2015.min.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
@@ -210,6 +210,70 @@
             </div>
             <div id="terminalContainer" class="terminal-container"></div>
           </div>
+
+          <!-- Agent panel (collapsible) -->
+          <div id="agentPanel" class="agent-panel hidden">
+            <div class="agent-header">
+              <span class="agent-title">🤖 Agent 执行中</span>
+              <div class="agent-controls">
+                <button id="agentPauseBtn" type="button" class="agent-btn" title="暂停">⏸️</button>
+                <button id="agentStopBtn" type="button" class="agent-btn" title="停止">⏹️</button>
+                <button id="closeAgentBtn" type="button" class="agent-btn" title="关闭">✕</button>
+              </div>
+            </div>
+
+            <!-- Phase indicator bar -->
+            <div id="agentPhaseBar" class="agent-phase-bar hidden">
+              <div class="phase-step" data-phase="parsing">
+                <span class="phase-icon">🔍</span>
+                <span class="phase-label">分析中</span>
+              </div>
+              <div class="phase-step" data-phase="planning">
+                <span class="phase-icon">📋</span>
+                <span class="phase-label">规划中</span>
+              </div>
+              <div class="phase-step" data-phase="preview">
+                <span class="phase-icon">👁️</span>
+                <span class="phase-label">预览</span>
+              </div>
+              <div class="phase-step" data-phase="applying">
+                <span class="phase-icon">⚙️</span>
+                <span class="phase-label">执行中</span>
+              </div>
+              <div class="phase-step" data-phase="done">
+                <span class="phase-icon">✅</span>
+                <span class="phase-label">完成</span>
+              </div>
+            </div>
+
+            <!-- Phase-specific content: thinking -->
+            <div id="agentThinking" class="agent-thinking hidden">
+              <div class="thinking-content" id="thinkingContent"></div>
+            </div>
+
+            <!-- Phase-specific content: diff preview -->
+            <div id="agentPreview" class="agent-preview hidden">
+              <div class="preview-header">
+                <strong>📝 修改预览 — 逐项确认</strong>
+                <span id="previewCount" class="preview-count"></span>
+              </div>
+              <div id="previewFiles" class="preview-files"></div>
+              <div class="preview-actions-global">
+                <button id="previewApproveAllBtn" type="button" class="preview-global-btn approve">全部批准</button>
+                <button id="previewRejectAllBtn" type="button" class="preview-global-btn reject">全部拒绝</button>
+              </div>
+            </div>
+
+            <!-- Phase-specific content: apply progress -->
+            <div id="agentApplying" class="agent-applying hidden">
+              <div class="apply-progress">
+                <div id="applySteps" class="apply-steps"></div>
+              </div>
+            </div>
+
+            <div id="agentTimeline" class="agent-timeline"></div>
+            <div id="agentOutput" class="agent-output"></div>
+          </div>
         </div>
 
         <!-- Composer (fixed bottom) -->
@@ -219,6 +283,7 @@
               <option value="ask">💬 Ask</option>
               <option value="plan">📋 Plan</option>
               <option value="craft">✏️ Craft</option>
+              <option value="agent">🤖 Agent</option>
             </select>
             <textarea id="questionInput" rows="2" placeholder="输入你的代码问题… (Enter 发送 / Shift+Enter 换行)" disabled></textarea>
             <button id="askBtn" type="submit" disabled>发送</button>

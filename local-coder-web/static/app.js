@@ -48,6 +48,18 @@ const codeBody        = document.querySelector("#codeBody");
 const toggleTerminalBtn = document.querySelector("#toggleTerminalBtn");
 const terminalPanel     = document.querySelector("#terminalPanel");
 const closeTerminalBtn  = document.querySelector("#closeTerminalBtn");
+
+// Agent
+const agentPanel        = document.querySelector("#agentPanel");
+const agentPauseBtn     = document.querySelector("#agentPauseBtn");
+const agentStopBtn      = document.querySelector("#agentStopBtn");
+const closeAgentBtn     = document.querySelector("#closeAgentBtn");
+const agentTimeline     = document.querySelector("#agentTimeline");
+const agentOutput       = document.querySelector("#agentOutput");
+
+// Agent state
+let agentTaskId = null;
+let agentEventSource = null;
 const terminalContainer = document.querySelector("#terminalContainer");
 const workspaceContent  = document.querySelector(".workspace-content");
 
@@ -124,10 +136,21 @@ modeSelect.addEventListener("change", () => {
     ask:   "输入你的代码问题… (Enter 发送 / Shift+Enter 换行)",
     plan:  "描述你需要规划的功能或架构… (Enter 发送)",
     craft: "描述你要做的代码修改，我将生成完整文件… (Enter 发送)",
+    agent: "描述你想要完成的任务，Agent 将自主执行多步操作… (Enter 发送)",
   };
   questionInput.placeholder = hints[currentMode] || hints.ask;
-  const btnLabels = { ask: "发送", plan: "规划", craft: "编辑" };
+  const btnLabels = { ask: "发送", plan: "规划", craft: "编辑", agent: "执行" };
   askBtn.textContent = btnLabels[currentMode] || "发送";
+  
+  // Toggle Agent panel
+  const agentPanel = document.querySelector("#agentPanel");
+  if (agentPanel) {
+    if (currentMode === "agent") {
+      agentPanel.classList.remove("hidden");
+    } else {
+      agentPanel.classList.add("hidden");
+    }
+  }
 });
 
 /* ─── Settings panel (collapsible) ────────────────────────────── */
@@ -1150,8 +1173,15 @@ askForm.addEventListener("submit", async (e) => {
   const question = questionInput.value.trim();
   if (!question || isBusy) return;
   questionInput.value = "";
-  addUserMessage(question);
-  await streamAsk(question);
+  
+  if (currentMode === "agent") {
+    // Agent mode: start agent task
+    await startAgentTask(question);
+  } else {
+    // Normal modes: ask/plan/craft
+    addUserMessage(question);
+    await streamAsk(question);
+  }
 });
 
 /* ─── Init: restore folder state ──────────────────────────────── */
@@ -1298,7 +1328,7 @@ async function executeCommand(cmd) {
   const isWindows = navigator.platform.toLowerCase().includes('win');
   
   if (isWindows) {
-    // Common Unix -> Windows command conversions
+    // Common Unix -> Windows command conversions (expanded to ~30)
     const cmdMap = [
       ['ls -la', 'dir /a'],
       ['ls -l', 'dir /l'],
@@ -1306,17 +1336,32 @@ async function executeCommand(cmd) {
       ['ls', 'dir /b'],
       ['ll', 'dir /b'],
       ['la', 'dir /a'],
+      ['ls -lah', 'dir /a'],
       ['pwd', 'cd'],
       ['clear', 'cls'],
       ['cat ', 'type '],
       ['rm -rf ', 'rmdir /s /q '],
+      ['rm -r ', 'rmdir /s /q '],
       ['rm ', 'del /f '],
       ['mkdir ', 'mkdir '],
       ['touch ', 'echo. > '],
       ['which ', 'where '],
+      ['grep -r ', 'findstr /s /i '],
       ['grep ', 'findstr '],
       ['head -n', 'more +'],
       ['tail -n', 'for /f'],
+      ['tail -f', 'Get-Content -Wait'],
+      ['find . -name', 'dir /s /b'],
+      ['du -sh', 'Get-ChildItem -Recurse | Measure-Object -Property Length -Sum'],
+      ['wc -l', 'Get-Content | Measure-Object -Line'],
+      ['cp -r ', 'xcopy /E /I '],
+      ['mv ', 'move '],
+      ['ln -s ', 'New-Item -ItemType SymbolicLink'],
+      ['chmod ', 'icacls'],
+      ['ps aux', 'Get-Process'],
+      ['kill ', 'Stop-Process -Id '],
+      ['df -h', 'Get-PSDrive'],
+      ['uptime', 'Get-CimInstance Win32_OperatingSystem'],
     ];
     
     for (const [unix, win] of cmdMap) {
@@ -1888,4 +1933,422 @@ window.initCodeMirror = function(content = "", mode = "text") {
   });
   
   return editor;
+};
+
+/* ─── Agent Mode Functions ──────────────────────────────────────── */
+
+async function startAgentTask(query) {
+  if (!folderStatus.dataset.ready) {
+    alert("请先设置代码文件夹");
+    return;
+  }
+  
+  setBusy(true);
+  
+  // Clear agent panel
+  if (agentTimeline) agentTimeline.innerHTML = "";
+  if (agentOutput) agentOutput.innerHTML = "";
+  
+  try {
+    // Start agent task
+    const startRes = await fetch("/api/agent/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, max_steps: 15 }),
+    });
+    
+    if (!startRes.ok) {
+      const err = await startRes.json();
+      throw new Error(err.detail || "Failed to start agent");
+    }
+    
+    const startData = await startRes.json();
+    agentTaskId = startData.task_id;
+    
+    // Show agent panel
+    if (agentPanel) agentPanel.classList.remove("hidden");
+    
+    // Start streaming execution
+    await streamAgentExecution(agentTaskId);
+    
+  } catch (err) {
+    appendAgentOutput(`❌ Error: ${err.message}`, "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function streamAgentExecution(taskId) {
+  appendAgentOutput("🤖 Agent 正在思考...", "thinking");
+  
+  try {
+    const response = await fetch(`/api/agent/execute/${taskId}`, {
+      method: "POST",
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      
+      const chunk = decoder.decode(value);
+      const lines = chunk.split("\n");
+      
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        
+        try {
+          const data = JSON.parse(line.slice(5));
+          handleAgentEvent(data);
+        } catch (e) {
+          // Skip invalid JSON
+        }
+      }
+    }
+    
+  } catch (err) {
+    appendAgentOutput(`❌ Execution error: ${err.message}`, "error");
+  }
+}
+
+function handleAgentEvent(data) {
+  switch (data.type) {
+    case "status":
+      appendAgentOutput(`📋 ${data.message}`, "info");
+      break;
+      
+    case "thinking":
+      appendAgentOutput("🤔 思考中...", "thinking");
+      break;
+      
+    case "llm_response":
+      appendAgentOutput(`💡 ${data.content.slice(0, 500)}`, "info");
+      break;
+      
+    case "tool_call":
+      addAgentStep(data.tool, "running");
+      appendAgentOutput(`🔧 调用工具: ${data.tool}`, "tool-call");
+      break;
+      
+    case "tool_result":
+      appendAgentOutput(`✅ 结果: ${data.result.slice(0, 200)}...`, "tool-result");
+      updateAgentStep(data.tool, "success");
+      break;
+      
+    case "tool_error":
+      appendAgentOutput(`❌ 工具错误: ${data.error}`, "error");
+      updateAgentStep(data.tool, "failed");
+      break;
+      
+    case "done":
+      appendAgentOutput(`🎉 任务完成!\n\n${data.result}`, "success");
+      updateAgentStep("done", "success");
+      break;
+      
+    case "error":
+      appendAgentOutput(`❌ 错误: ${data.message}`, "error");
+      break;
+  }
+}
+
+function addAgentStep(toolName, status) {
+  if (!agentTimeline) return;
+  
+  const step = document.createElement("div");
+  step.className = "agent-step";
+  step.dataset.tool = toolName;
+  step.innerHTML = `
+    <span class="agent-step-status ${status}"></span>
+    <span class="agent-step-tool">${toolName}</span>
+    <span class="agent-step-duration">-</span>
+  `;
+  agentTimeline.appendChild(step);
+  agentTimeline.scrollTop = agentTimeline.scrollHeight;
+}
+
+function updateAgentStep(toolName, status) {
+  if (!agentTimeline) return;
+  
+  const steps = agentTimeline.querySelectorAll(".agent-step");
+  for (const step of steps) {
+    if (step.dataset.tool === toolName || (toolName === "done" && !step.dataset.done)) {
+      const statusEl = step.querySelector(".agent-step-status");
+      statusEl.className = `agent-step-status ${status}`;
+      
+      if (status === "success" || status === "failed") {
+        step.dataset.done = "true";
+      }
+      break;
+    }
+  }
+}
+
+function appendAgentOutput(text, className) {
+  if (!agentOutput) return;
+  
+  const line = document.createElement("div");
+  line.className = className || "";
+  line.textContent = text;
+  agentOutput.appendChild(line);
+  agentOutput.scrollTop = agentOutput.scrollHeight;
+}
+
+/* ─── Agent Phase / Diff Preview Functions ───────────────────── */
+
+let currentAgentPlanFiles = [];  // Track plan files for approve/reject
+
+function updatePhaseBar(phase) {
+  const bar = document.querySelector("#agentPhaseBar");
+  if (!bar) return;
+  bar.classList.remove("hidden");
+
+  const steps = bar.querySelectorAll(".phase-step");
+  const phaseOrder = ["parsing", "planning", "preview", "applying", "done"];
+  const currentIdx = phaseOrder.indexOf(phase);
+
+  steps.forEach((step, i) => {
+    step.classList.remove("active", "completed");
+    if (i < currentIdx) {
+      step.classList.add("completed");
+    } else if (i === currentIdx) {
+      step.classList.add("active");
+    }
+  });
+}
+
+function showAgentThinking(content) {
+  const el = document.querySelector("#agentThinking");
+  if (!el) return;
+  el.classList.remove("hidden");
+  document.getElementById("thinkingContent").textContent = content;
+}
+
+function hideAgentThinking() {
+  const el = document.querySelector("#agentThinking");
+  if (el) el.classList.add("hidden");
+}
+
+function renderDiffPreview(planData) {
+  const preview = document.querySelector("#agentPreview");
+  const filesContainer = document.querySelector("#previewFiles");
+  const countEl = document.getElementById("previewCount");
+  if (!preview || !filesContainer) return;
+
+  currentAgentPlanFiles = [];
+  const files = planData.files || [];
+  countEl.textContent = `${files.length} 个文件待确认`;
+
+  filesContainer.innerHTML = "";
+  files.forEach((fcp) => {
+    const fileEl = document.createElement("div");
+    fileEl.className = "preview-file";
+    fileEl.dataset.path = fcp.path;
+
+    // Parse diff stats
+    const addedMatch = fcp.diff?.match(/^\+[^-]/gm);
+    const removedMatch = fcp.diff?.match(/^-[^+]/gm);
+    const added = addedMatch ? addedMatch.length : 0;
+    const removed = removedMatch ? removedMatch.length : 0;
+
+    const statsClass = added > removed ? "added" : removed > added ? "removed" : "";
+    const statsText = `${added > 0 ? "+" + added : ""}${removed > 0 ? "-" + removed : ""}`;
+
+    // Truncate diff preview to 20 lines
+    const diffLines = (fcp.diff || "").split("\n").slice(0, 20);
+    const diffPreview = diffLines.join("\n") + (diffLines.length >= 20 ? "\n... (更多)" : "");
+
+    fileEl.innerHTML = `
+      <div class="preview-file-header">
+        <span class="preview-path">${escapeHtml(fcp.path)}</span>
+        <span class="preview-stats ${statsClass}">${statsText}</span>
+        <div class="preview-actions">
+          <button class="preview-approve" data-path="${escapeHtml(fcp.path)}" title="批准">✅ 批准</button>
+          <button class="preview-reject" data-path="${escapeHtml(fcp.path)}" title="拒绝">❌ 拒绝</button>
+        </div>
+      </div>
+      <div class="preview-diff">${escapeHtml(diffPreview)}</div>
+    `;
+
+    filesContainer.appendChild(fileEl);
+    currentAgentPlanFiles.push(fcp);
+  });
+
+  // Attach event listeners
+  preview.querySelectorAll(".preview-approve").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const path = btn.dataset.path;
+      approveFile(path);
+      btn.classList.add("approved");
+      btn.textContent = "✅ 已批";
+      btn.disabled = true;
+      // Disable reject button
+      const rejectBtn = btn.parentElement.querySelector(".preview-reject");
+      if (rejectBtn) {
+        rejectBtn.disabled = true;
+      }
+    });
+  });
+
+  preview.querySelectorAll(".preview-reject").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const path = btn.dataset.path;
+      rejectFile(path);
+      btn.classList.add("rejected");
+      btn.textContent = "❌ 已拒";
+      btn.disabled = true;
+      const approveBtn = btn.parentElement.querySelector(".preview-approve");
+      if (approveBtn) {
+        approveBtn.disabled = true;
+      }
+    });
+  });
+
+  // Global actions
+  const approveAllBtn = document.getElementById("previewApproveAllBtn");
+  const rejectAllBtn = document.getElementById("previewRejectAllBtn");
+  if (approveAllBtn) {
+    approveAllBtn.addEventListener("click", () => {
+      preview.querySelectorAll(".preview-approve:not([disabled])").forEach((btn) => {
+        btn.click();
+      });
+    });
+  }
+  if (rejectAllBtn) {
+    rejectAllBtn.addEventListener("click", () => {
+      preview.querySelectorAll(".preview-reject:not([disabled])").forEach((btn) => {
+        btn.click();
+      });
+    });
+  }
+
+  preview.classList.remove("hidden");
+}
+
+function hideDiffPreview() {
+  const el = document.querySelector("#agentPreview");
+  if (el) el.classList.add("hidden");
+}
+
+async function approveFile(path) {
+  if (!agentTaskId) return;
+  try {
+    await fetch("/api/agent/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task_id: agentTaskId, action: "confirm", tool_call_id: path }),
+    });
+  } catch (e) {
+    console.error("Approve failed:", e);
+  }
+}
+
+async function rejectFile(path) {
+  if (!agentTaskId) return;
+  try {
+    await fetch("/api/agent/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task_id: agentTaskId, action: "reject", tool_call_id: path }),
+    });
+  } catch (e) {
+    console.error("Reject failed:", e);
+  }
+}
+
+function showApplyProgress(planData) {
+  const applying = document.querySelector("#agentApplying");
+  const stepsEl = document.getElementById("applySteps");
+  if (!applying || !stepsEl) return;
+
+  stepsEl.innerHTML = "";
+  const files = planData.files || [];
+
+  files.forEach((fcp) => {
+    const step = document.createElement("div");
+    step.className = "apply-step";
+    step.dataset.status = fcp.user_approved ? "pending" : "rejected";
+    step.innerHTML = `
+      <span class="apply-step-icon">${fcp.user_approved ? "○" : "✗"}</span>
+      <span>${escapeHtml(fcp.path)}</span>
+    `;
+    stepsEl.appendChild(step);
+  });
+
+  applying.classList.remove("hidden");
+}
+
+function updateApplyStep(filePath, status) {
+  const stepsEl = document.getElementById("applySteps");
+  if (!stepsEl) return;
+  stepsEl.querySelectorAll(".apply-step").forEach((step) => {
+    if (step.textContent.includes(filePath)) {
+      step.dataset.status = status;
+      const icon = step.querySelector(".apply-step-icon");
+      if (icon) {
+        icon.textContent = status === "completed" ? "✓" : status === "error" ? "✗" : "→";
+      }
+    }
+  });
+}
+
+function hideApplyProgress() {
+  const el = document.querySelector("#agentApplying");
+  if (el) el.classList.add("hidden");
+}
+
+// Enhanced handleAgentEvent for phase/diff preview events
+const _origHandleAgentEvent = handleAgentEvent;
+handleAgentEvent = function(data) {
+  switch (data.type) {
+    case "phase_change":
+      updatePhaseBar(data.phase);
+      if (data.message) appendAgentOutput(`📌 ${data.message}`, "info");
+      break;
+
+    case "analysis":
+      showAgentThinking(`任务类型: ${data.intent_type}\n描述: ${data.description}`);
+      setTimeout(hideAgentThinking, 2000);
+      break;
+
+    case "plan_generated":
+      showAgentThinking(`已生成修改计划:\n${data.content.slice(0, 300)}...`);
+      break;
+
+    case "plan_data":
+      hideAgentThinking();
+      hideDiffPreview();
+      showApplyProgress(data);
+      renderDiffPreview(data);
+      break;
+
+    case "file_approved":
+      appendAgentOutput(`✅ 已批准: ${data.file}`, "success");
+      break;
+
+    case "file_rejected":
+      appendAgentOutput(`❌ 已拒绝: ${data.file}`, "error");
+      break;
+
+    case "apply_progress":
+      if (data.step !== undefined) {
+        const fileEl = document.querySelector(`#agentApplying .apply-step[data-step="${data.step}"]`);
+      }
+      if (data.file) {
+        updateApplyStep(data.file, data.status);
+      }
+      break;
+
+    case "warning":
+      appendAgentOutput(`⚠️ ${data.message}`, "error");
+      break;
+
+    default:
+      _origHandleAgentEvent(data);
+  }
 };

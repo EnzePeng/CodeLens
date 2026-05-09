@@ -1696,3 +1696,440 @@ button.primary-btn:disabled, #setFolderBtn:disabled { cursor: not-allowed; backg
   .mode-select { font-size: 12px; padding-right: 24px; }
   .file-viewer { width: 95vw; max-width: none; }
 }
+
+/* ─── Agent Panel ──────────────────────────────────────────────── */
+:root {
+  --agent-bg: #f8f9fa;
+  --agent-border: #dee2e6;
+  --agent-header: #e9ecef;
+  --agent-success: #28a745;
+  --agent-failed: #dc3545;
+  --agent-running: #ffc107;
+  --agent-pending: #6c757d;
+}
+
+[data-theme="dark"] {
+  --agent-bg: #2d3035;
+  --agent-border: #495057;
+  --agent-header: #343a40;
+  --agent-success: #2ea44f;
+  --agent-failed: #f85149;
+  --agent-running: #d29922;
+  --agent-pending: #8b949e;
+}
+
+.agent-panel {
+  position: absolute;
+  bottom: 80px;
+  left: 10px;
+  right: 10px;
+  max-height: 300px;
+  background: var(--agent-bg);
+  border: 1px solid var(--agent-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  display: flex;
+  flex-direction: column;
+  z-index: 100;
+}
+
+.agent-panel.hidden { display: none; }
+
+.agent-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 15px;
+  background: var(--agent-header);
+  border-bottom: 1px solid var(--agent-border);
+  border-radius: 8px 8px 0 0;
+}
+
+.agent-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.agent-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.agent-btn {
+  background: transparent;
+  border: 1px solid var(--agent-border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.agent-btn:hover {
+  background: var(--agent-border);
+}
+
+.agent-timeline {
+  flex: 0 0 auto;
+  max-height: 120px;
+  overflow-y: auto;
+  padding: 10px;
+  border-bottom: 1px solid var(--agent-border);
+}
+
+.agent-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  font-size: 13px;
+}
+
+.agent-step-status {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.agent-step-status.pending { background: var(--agent-pending); }
+.agent-step-status.running { background: var(--agent-running); animation: pulse 1s infinite; }
+.agent-step-status.success { background: var(--agent-success); }
+.agent-step-status.failed { background: var(--agent-failed); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.agent-step-tool {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.agent-step-duration {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.agent-output {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+  font-family: monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  background: var(--code-bg);
+  color: var(--code);
+  border-radius: 0 0 8px 8px;
+}
+
+.agent-output .thinking {
+  color: var(--agent-running);
+  font-style: italic;
+}
+
+.agent-output .tool-call {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.agent-output .tool-result {
+  color: var(--agent-success);
+}
+
+.agent-output .error {
+  color: var(--agent-failed);
+}
+
+/* Agent mode specific styles */
+.workspace.agent-mode .composer {
+  border-top: 3px solid var(--accent);
+}
+
+/* ─── Agent Phase Bar ──────────────────────────────────────────── */
+.agent-phase-bar {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px;
+  background: var(--agent-header);
+  border-bottom: 1px solid var(--agent-border);
+}
+
+.phase-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--agent-border);
+  transition: all 0.3s ease;
+}
+
+.phase-step.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+  box-shadow: 0 2px 8px rgba(31,111,91,0.3);
+}
+
+.phase-step.completed {
+  background: var(--soft);
+  color: var(--accent-dark);
+  border-color: var(--accent);
+}
+
+.phase-icon {
+  font-size: 14px;
+}
+
+/* ─── Agent Thinking ───────────────────────────────────────────── */
+.agent-thinking {
+  padding: 12px;
+  border-bottom: 1px solid var(--agent-border);
+}
+
+.thinking-content {
+  font-size: 13px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.thinking-content .thinking-dots::after {
+  content: "";
+  animation: dots 1.5s infinite;
+}
+
+@keyframes dots {
+  0%, 20% { content: "."; }
+  40% { content: ".."; }
+  60%, 100% { content: "..."; }
+}
+
+/* ─── Agent Diff Preview ───────────────────────────────────────── */
+.agent-preview {
+  border-bottom: 1px solid var(--agent-border);
+}
+
+.preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: var(--agent-header);
+  font-size: 13px;
+}
+
+.preview-count {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.preview-files {
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 8px 12px;
+}
+
+.preview-file {
+  border: 1px solid var(--agent-border);
+  border-radius: 6px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+.preview-file-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--agent-border);
+}
+
+.preview-path {
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--code);
+}
+
+.preview-stats {
+  font-size: 11px;
+  font-weight: 700;
+  margin-right: 12px;
+}
+
+.preview-stats.added { color: var(--agent-success); }
+.preview-stats.removed { color: var(--agent-failed); }
+
+.preview-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.preview-approve,
+.preview-reject,
+.preview-edit {
+  border: 0;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.preview-approve {
+  background: var(--soft);
+  color: var(--accent-dark);
+  border: 1px solid var(--accent);
+}
+
+.preview-approve:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.preview-approve.approved {
+  background: var(--accent);
+  color: #fff;
+}
+
+.preview-reject {
+  background: #fde8e8;
+  color: var(--agent-failed);
+  border: 1px solid var(--agent-failed);
+}
+
+.preview-reject:hover {
+  background: var(--agent-failed);
+  color: #fff;
+}
+
+.preview-reject.rejected {
+  background: var(--agent-failed);
+  color: #fff;
+}
+
+.preview-diff {
+  padding: 8px 12px;
+  background: var(--code-bg);
+  color: #d4d4d4;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  max-height: 150px;
+  overflow: auto;
+  white-space: pre;
+}
+
+.preview-diff .diff-added {
+  background: rgba(46, 160, 79, 0.15);
+  color: #3fb950;
+}
+
+.preview-diff .diff-removed {
+  background: rgba(248, 81, 73, 0.15);
+  color: #f85149;
+}
+
+.preview-diff .diff-context {
+  color: #8b949e;
+}
+
+.preview-actions-global {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  justify-content: flex-end;
+  border-top: 1px solid var(--agent-border);
+}
+
+.preview-global-btn {
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 16px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.preview-global-btn.approve {
+  background: var(--accent);
+  color: #fff;
+}
+
+.preview-global-btn.approve:hover {
+  background: var(--accent-dark);
+}
+
+.preview-global-btn.reject {
+  background: #fde8e8;
+  color: var(--agent-failed);
+  border: 1px solid var(--agent-failed);
+}
+
+.preview-global-btn.reject:hover {
+  background: var(--agent-failed);
+  color: #fff;
+}
+
+/* ─── Agent Apply Progress ─────────────────────────────────────── */
+.agent-applying {
+  padding: 12px;
+  border-bottom: 1px solid var(--agent-border);
+}
+
+.apply-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.apply-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: "Cascadia Code", Consolas, monospace;
+  transition: all 0.2s;
+}
+
+.apply-step-icon {
+  font-size: 16px;
+  width: 20px;
+  text-align: center;
+}
+
+.apply-step[data-status="completed"] {
+  background: var(--soft);
+  color: var(--accent-dark);
+}
+
+.apply-step[data-status="running"] {
+  background: #fff8e1;
+  color: var(--agent-running);
+  animation: step-pulse 1s infinite;
+}
+
+.apply-step[data-status="pending"] {
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+.apply-step[data-status="error"] {
+  background: #fde8e8;
+  color: var(--agent-failed);
+}
+
+@keyframes step-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
