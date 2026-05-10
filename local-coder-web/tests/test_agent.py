@@ -78,7 +78,7 @@ def test_stop_task():
     assert result is True
     
     task = agent.get_task(task_id)
-    assert task.status == "failed"
+    assert task.status == "stopped"
     assert task.result == "user_stopped"
 
 
@@ -147,19 +147,21 @@ def test_parse_tool_calls():
     """Test parsing tool calls from LLM output."""
     agent = AgentLoop()
     
+    from core.agent import parse_tool_calls
+
     # Test JSON format
     text = '{"tool": "read_file", "args": {"path": "main.py"}}'
-    calls = agent.parse_tool_calls(text)
+    calls = parse_tool_calls(text)
     assert len(calls) == 1
     assert calls[0]["tool"] == "read_file"
     assert calls[0]["args"]["path"] == "main.py"
-    
+
     # Test multiple tool calls
     text2 = '''
     {"tool": "read_file", "args": {"path": "a.py"}}
     {"tool": "write_file", "args": {"path": "b.py", "content": "test"}}
     '''
-    calls2 = agent.parse_tool_calls(text2)
+    calls2 = parse_tool_calls(text2)
     assert len(calls2) == 2
 
 

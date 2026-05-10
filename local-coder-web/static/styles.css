@@ -1818,8 +1818,8 @@ button.primary-btn:disabled, #setFolderBtn:disabled { cursor: not-allowed; backg
   font-family: monospace;
   font-size: 12px;
   white-space: pre-wrap;
-  background: var(--code-bg);
-  color: var(--code);
+  background: var(--panel);
+  color: var(--text);
   border-radius: 0 0 8px 8px;
 }
 
@@ -2133,3 +2133,177 @@ button.primary-btn:disabled, #setFolderBtn:disabled { cursor: not-allowed; backg
   0%, 100% { opacity: 1; }
   50% { opacity: 0.7; }
 }
+
+/* ─── Code block copy button (#36) ──────────────────────────── */
+.code-block {
+  position: relative;
+}
+.code-block .copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  background: rgba(255,255,255,0.1);
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 4px;
+  color: #a4c9b7;
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s, background 0.15s;
+  z-index: 5;
+}
+.code-block:hover .copy-btn { opacity: 1; }
+.code-block .copy-btn:hover { background: rgba(255,255,255,0.2); }
+.code-block .copy-btn.copied { color: #3fb950; border-color: #3fb950; }
+
+/* ─── Diff preview inline styles (#31-34) ─────────────────────── */
+.diff-view {
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre;
+  overflow-x: auto;
+}
+.diff-view .diff-added {
+  background: rgba(46, 160, 79, 0.12);
+  color: #3fb950;
+}
+.diff-view .diff-removed {
+  background: rgba(248, 81, 73, 0.12);
+  color: #f85149;
+  text-decoration: line-through;
+}
+.diff-view .diff-hunk {
+  color: var(--muted);
+  font-size: 11px;
+  padding: 2px 0;
+}
+
+/* ─── File tree search filter (#40) ───────────────────────────── */
+.tree-search {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+}
+.tree-search input {
+  font-size: 11px;
+  padding: 4px 8px;
+  height: 28px;
+  border-radius: 4px;
+}
+
+/* ─── Keyboard shortcuts modal (#55) ─────────────────────────── */
+.shortcuts-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.5);
+  display: grid; place-items: center;
+  z-index: 5000;
+  animation: fade-in 0.15s ease;
+}
+.shortcuts-dialog {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 24px;
+  min-width: 400px;
+  max-width: 500px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+}
+.shortcuts-dialog h2 { margin: 0 0 16px; font-size: 18px; }
+.shortcuts-table { width: 100%; border-collapse: collapse; }
+.shortcuts-table td { padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.shortcuts-table td:last-child { text-align: right; }
+.kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  font-family: monospace;
+  font-size: 11px;
+  box-shadow: 0 1px 0 var(--line);
+}
+.shortcuts-close {
+  margin-top: 16px;
+  border: 0; border-radius: 6px;
+  background: var(--accent); color: #fff;
+  padding: 8px 24px; cursor: pointer;
+  font-weight: 600;
+}
+
+/* ─── Markdown enhancements (#35, #37, #38) ──────────────────── */
+.markdown details {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fafaf6;
+}
+.markdown summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--accent-dark);
+}
+.markdown a.file-path {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+}
+.markdown a.file-path:hover { color: var(--accent-dark); }
+
+/* ─── Virtual scroll support (#39) ────────────────────────────── */
+.tree-virtual-container {
+  overflow-y: auto;
+  overflow-x: hidden;
+  position: relative;
+}
+.tree-virtual-spacer {
+  position: relative;
+}
+.tree-virtual-content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+}
+
+/* ─── SSE retry indicator (#50) ───────────────────────────────── */
+.sse-retrying {
+  display: inline-block;
+  color: var(--agent-running);
+  font-size: 11px;
+  font-style: italic;
+  animation: pulse 1s infinite;
+}
+
+/* ─── Collapsible thinking (#51) ──────────────────────────────── */
+.thinking summary::-webkit-details-marker {
+  display: none;
+}
+.thinking summary::before {
+  content: "▸ ";
+  transition: transform 0.2s;
+}
+.thinking[open] summary::before {
+  content: "▾ ";
+}
+
+/* ─── Settings persist hint (#48) ─────────────────────────────── */
+.settings-persist {
+  font-size: 10px;
+  color: var(--muted);
+  text-align: right;
+  font-style: italic;
+}
+
+/* ─── Health dot (#83) ────────────────────────────────────────── */
+.health-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.health-dot.healthy { background: #3fb950; }
+.health-dot.unhealthy { background: #f85149; }

@@ -19,4 +19,6 @@ if (-not (Test-Path $Model)) {
     --host 127.0.0.1 `
     --port 8080 `
     --jinja `
-    --reasoning-format none
+    --reasoning-format none `
+    --cache-type-k q4_0 `
+    --cache-reuse 3000

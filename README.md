@@ -1,4 +1,4 @@
-# CodeLens — Local Offline Code Reading Assistant + AI Coding Agent
+# CodeLens — Local Offline Code Reading Assistant + AI Coding Agent (v0.3.1)
 
 > Fully offline code understanding tool powered by llama.cpp + Qwen3.5, running entirely on your local machine.
 
@@ -65,7 +65,7 @@ CodeLens/
 │   │       ├── diff_preview.py
 │   │       ├── search_files.py
 │   │       ├── list_directory.py
-│   │       ├── run_command.py     # Command whitelist + dangerous pattern detection
+│   │       ├── run_command.py     # Command whitelist + dangerous pattern + metacharacter filter
 │   │       ├── git_operation.py
 │   │       ├── undo_edit.py      # JSON-persisted undo/redo
 │   │       ├── file_operations.py # copy/move/delete/mkdir
@@ -182,6 +182,7 @@ CodeLens Agent goes beyond simple tool-calling with advanced autonomous executio
 - **Phase Indicator** — Real-time display: parsing → planning → preview → applying → done
 - **16 Tools** — read_file, write_file, edit_file, apply_diff, search_files, list_directory, run_command, git_operation, undo_edit, diff_preview, file_operations, code_analysis, test, project
 - **SSE Streaming** — Real-time step timeline, tool call display, execution progress
+- **Security** — Command whitelist, dangerous pattern detection, shell metacharacter filtering, path traversal protection
 
 ### Advanced Agent Flow (ReAct Loop)
 
@@ -214,7 +215,6 @@ Intent Classification (simple vs complex)
 | Mode | Description | Prerequisites |
 |------|-------------|---------------|
 | **BM25** (default) | TF-IDF enhanced retrieval | No extra download needed |
-| **ONNX semantic |
 | **ONNX Semantic** | More accurate semantic matching | Place bge-small-zh-v1.5 in `models/` directory |
 
 ### Retrieval Pipeline

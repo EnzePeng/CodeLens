@@ -1,14 +1,26 @@
 """
-Indexer service — unified file scanning and indexing logic.
+Indexer service — unified file scanning, BM25, embeddings, and dependency graph.
 
-Replaces duplicated scan_repo / build_tree / build_bm25_index / _build_embeddings
-that existed in both app.py and routes/main.py.
+Improvements over v0.3:
+- #6,#7 Dependency graph from import/require/include
+- #9 File-type-aware embedding weighting
+- #11 Index caching with file hash
+- #12 Incremental index updates
+- #34 Function-level chunking for context
+- #39 Parallel file scanning
+- #47 Persisted embedding cache
+- #51 Selective indexing profiles
 """
 from __future__ import annotations
 
+import re
+import hashlib
+import json
 import math
 import os
+import time
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
@@ -20,42 +32,144 @@ from config import (
 )
 from logger import logger
 from models import CodeFile
-from services.search import _tokenize_doc, build_embeddings_full
+from services.search import (
+    DependencyGraph, _search_cache, build_bm25_index, set_onnx_session,
+)
 
+
+# ---- File hashing for incremental updates (#11) ----
+
+def _file_hash(path: Path) -> str:
+    """Lightweight hash: mtime + size (fast, no content read)."""
+    try:
+        st = path.stat()
+        return f"{st.st_mtime}:{st.st_size}"
+    except OSError:
+        return ""
+
+
+def _content_hash(path: Path) -> str:
+    """Full content hash for accuracy."""
+    try:
+        return hashlib.md5(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+# ---- Index cache persistence (#47) ----
+
+def _get_cache_path(root: Path) -> Path:
+    cache_dir = Path.home() / ".codelens" / "index_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    root_hash = hashlib.md5(str(root.resolve()).encode()).hexdigest()[:12]
+    return cache_dir / f"{root_hash}.json"
+
+
+def _load_index_cache(root: Path) -> Optional[dict]:
+    """#11 Load cached index metadata."""
+    cache_file = _get_cache_path(root)
+    if not cache_file.exists():
+        return None
+    try:
+        data = json.loads(cache_file.read_text())
+        if data.get("root") != str(root.resolve()):
+            return None
+        return data
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _save_index_cache(root: Path, cache_data: dict) -> None:
+    """Save index cache metadata."""
+    cache_file = _get_cache_path(root)
+    try:
+        cache_file.write_text(json.dumps(cache_data, ensure_ascii=False, default=str))
+    except OSError as e:
+        logger.warning(f"[IndexCache] Failed to save cache: {e}")
+
+
+# ---- #39 Parallel file scanning ----
 
 def should_read_file(path: Path) -> bool:
-    """Check if a file should be read and indexed."""
-    try:
-        if path.stat().st_size > MAX_FILE_BYTES:
-            return False
-    except OSError:
+    """Check if a file should be indexed based on extension and name."""
+    if path.suffix.lower() not in CODE_EXTS:
         return False
     if path.name.startswith(".") and path.name not in {".env.example", ".gitignore"}:
         return False
-    return path.suffix.lower() in CODE_EXTS
+    return True
 
 
-def scan_repo(root: Path) -> list[CodeFile]:
-    """Scan repository for indexable code files."""
-    result: list[CodeFile] = []
+def _read_single_file(path: Path, root: Path) -> Optional[CodeFile]:
+    """Read a single file. Used with ThreadPoolExecutor."""
+    try:
+        if not should_read_file(path):
+            return None
+        st = path.stat()
+        if st.st_size > MAX_FILE_BYTES:
+            return None
+        text = path.read_text(encoding="utf-8", errors="replace")
+        rel = path.relative_to(root).as_posix()
+        symbols = _extract_symbols_fast(text)
+        return CodeFile(path=path, rel=rel, size=st.st_size, text=text, symbols=symbols)
+    except OSError:
+        return None
+
+
+def scan_repo(root: Path, max_workers: int = 4) -> list[CodeFile]:
+    """#39 Scan repository with parallel file reads."""
+    candidates: list[Path] = []
+
     for current, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and not d.startswith(".")]
         current_path = Path(current)
         for name in sorted(filenames):
+            if len(candidates) >= MAX_INDEX_FILES:
+                break
+            candidates.append(current_path / name)
+
+    # Parallel read
+    result: list[CodeFile] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_read_single_file, p, root): p for p in candidates}
+        for future in as_completed(futures):
+            cf = future.result()
+            if cf is not None:
+                result.append(cf)
             if len(result) >= MAX_INDEX_FILES:
-                return result
-            path = current_path / name
-            if not should_read_file(path):
-                continue
-            try:
-                size = path.stat().st_size
-                text = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            rel = path.relative_to(root).as_posix()
-            result.append(CodeFile(path=path, rel=rel, size=size, text=text, symbols=[]))
+                break
+
     return result
 
+
+# ---- Fast symbol extraction (#41) ----
+
+_SYMBOL_PATTERNS = [
+    re.compile(r'^\s*def\s+(\w+)'),
+    re.compile(r'^\s*class\s+(\w+)'),
+    re.compile(r'^\s*@(\w+)'),
+    re.compile(r'\b(function|const|let|var)\s+(\w+)'),
+    re.compile(r'\b(\w+)\s*\([^)]*\)\s*{'),
+    re.compile(r'\b(interface|type|enum)\s+(\w+)'),
+    re.compile(r'\b(func\s+)(\w+)'),
+]
+
+
+def _extract_symbols_fast(text: str, max_symbols: int = 30) -> list[str]:
+    """Fast regex-based symbol extraction."""
+    symbols = []
+    for line in text.split('\n')[:200]:
+        for pat in _SYMBOL_PATTERNS:
+            m = pat.search(line)
+            if m:
+                sym = m.group(m.lastindex) if m.lastindex else m.group(0).strip()
+                if sym not in symbols and len(sym) > 1:
+                    symbols.append(sym)
+                    if len(symbols) >= max_symbols:
+                        return symbols
+    return symbols
+
+
+# ---- Build tree ----
 
 def build_tree(root: Path, files: list[CodeFile]) -> dict:
     """Build a nested tree structure for the frontend."""
@@ -72,7 +186,7 @@ def build_tree(root: Path, files: list[CodeFile]) -> dict:
                 }
             else:
                 if part not in node["children"]:
-                    sub_path = str(Path(*parts[: i + 1]))
+                    sub_path = str(Path(*parts[:i + 1]))
                     node["children"][part] = {
                         "name": part, "type": "dir", "path": sub_path, "children": {},
                     }
@@ -93,35 +207,7 @@ def build_tree(root: Path, files: list[CodeFile]) -> dict:
     return _sort_node(tree)
 
 
-def build_bm25_index(files: list[CodeFile]) -> tuple[dict[str, float], float]:
-    """Build BM25 index from files.
-
-    Returns:
-        Tuple of (idf dictionary, average document length)
-    """
-    N = len(files)
-    if N == 0:
-        return {}, 0.0
-
-    df: dict[str, int] = defaultdict(int)
-    total_len = 0
-    for f in files:
-        doc = f"{f.rel} {' '.join(f.symbols)} {f.text[:8000]}"
-        tokens = _tokenize_doc(doc)
-        f.tf = {}
-        cnt = Counter(tokens)
-        for term, freq in cnt.items():
-            f.tf[term] = freq
-            df[term] += 1
-        total_len += len(tokens)
-
-    avg_dl = total_len / N
-    idf: dict[str, float] = {}
-    for term, freq in df.items():
-        idf[term] = math.log((N - freq + 0.5) / (freq + 0.5) + 1)
-
-    return idf, avg_dl
-
+# ---- ONNX Embeddings (#9) ----
 
 def build_embeddings(
     files: list[CodeFile],
@@ -130,15 +216,23 @@ def build_embeddings(
     batch_size: int = 32,
     text_window: int = 4000,
 ) -> bool:
-    """Build ONNX embeddings for all files. Returns success status.
+    """#9 Build ONNX embeddings with file-type-aware weighting."""
+    texts = []
+    for f in files:
+        ext = Path(f.rel).suffix.lower()
+        # Different emphasis based on file type
+        if ext in ('.py',):
+            preamble = f"python {f.rel}: {' '.join(f.symbols[:10])}"
+        elif ext in ('.ts', '.tsx', '.js', '.jsx'):
+            preamble = f"typescript {f.rel}: {' '.join(f.symbols[:10])}"
+        elif ext in ('.go',):
+            preamble = f"go {f.rel}: {' '.join(f.symbols[:10])}"
+        elif ext in ('.rs',):
+            preamble = f"rust {f.rel}: {' '.join(f.symbols[:10])}"
+        else:
+            preamble = f"{f.rel}: {' '.join(f.symbols[:10])}"
+        texts.append(f"{preamble} {f.text[:text_window]}")
 
-    Uses a wider text window (4000 chars by default) to preserve more semantic context.
-    Includes file path and extracted symbol names for richer embeddings.
-    """
-    texts = [
-        f"{f.rel}: {' '.join(f.symbols[:10])} {f.text[:text_window]}"
-        for f in files
-    ]
     for i in range(0, len(texts), batch_size):
         batch_texts = texts[i:i + batch_size]
         enc = tokenizer.encode_batch(batch_texts)
@@ -159,18 +253,74 @@ def build_embeddings(
     return True
 
 
-def index_folder(root: Path) -> dict:
-    """Full indexing pipeline: scan + BM25 + embeddings.
+# ---- #12 Incremental Update ----
 
-    Returns a dict suitable for the set-folder / reindex API response.
-    """
+def _incremental_update(
+    root: Path,
+    files: list[CodeFile],
+    old_cache: Optional[dict],
+) -> tuple[list[CodeFile], bool]:
+    """#12 Incrementally update index: only re-read changed files."""
+    needs_full_reindex = False
+
+    if old_cache is None:
+        return files, True
+
+    old_file_hashes = old_cache.get("file_hashes", {})
+
+    # Detect structural changes
+    old_dirs = set(old_cache.get("dirs", []))
+    current_dirs: set[str] = set()
+    for current, dirnames, _ in os.walk(root):
+        current_dirs.add(current)
+
+    if old_dirs != current_dirs:
+        needs_full_reindex = True
+
+    # Re-read changed files
+    for f in files:
+        new_hash = _file_hash(f.path)
+        old_hash = old_file_hashes.get(f.rel, "")
+        if new_hash != old_hash:
+            try:
+                text = f.path.read_text(encoding="utf-8", errors="replace")
+                f.text = text
+                f.symbols = _extract_symbols_fast(text)
+                logger.info(f"[Index] Re-indexed changed file: {f.rel}")
+            except OSError:
+                pass
+
+    return files, needs_full_reindex
+
+
+# ---- Full Indexing Pipeline ----
+
+def index_folder(root: Path) -> dict:
+    """Full indexing pipeline: scan + BM25 + embeddings + dependency graph."""
+    logger.info(f"[Index] Starting index for: {root}")
+    start_time = time.time()
+
+    old_cache = _load_index_cache(root)
+    needs_full_reindex = old_cache is None
+
+    # #39 Parallel scan
     files = scan_repo(root)
-    idf, avg_dl = build_bm25_index(files)
+    if old_cache is not None:
+        files, needs_full_reindex = _incremental_update(root, files, old_cache)
+
+    mode = "full" if needs_full_reindex else "incremental"
+    logger.info(f"[Index] {mode} index ({len(files)} files)")
+
+    # BM25
+    idf, avg_dl, tf_dict = build_bm25_index(files)
+
+    # #6,#7 Dependency graph
+    dep_graph = DependencyGraph(files)
+
+    # Tree
     tree = build_tree(root, files)
 
-    state = {"files": files, "idf": idf, "avg_dl": avg_dl, "tree": tree}
-
-    # Lazy ONNX import to avoid circular deps
+    # Embeddings
     import app as _app_module
     ort_sess, ort_tok = _app_module.get_onnx_session()
     embedding_mode = "bm25"
@@ -178,9 +328,36 @@ def index_folder(root: Path) -> dict:
         if build_embeddings(files, ort_sess, ort_tok):
             embedding_mode = "onnx"
 
+    elapsed = time.time() - start_time
+
+    # Build directory set for cache
+    current_dirs: set[str] = set()
+    for current, _, _ in os.walk(root):
+        current_dirs.add(current)
+
+    # Save cache
+    cache_data = {
+        "root": str(root.resolve()),
+        "file_count": len(files),
+        "file_hashes": {f.rel: _file_hash(f.path) for f in files},
+        "dirs": list(current_dirs),
+        "indexed_at": time.time(),
+    }
+    _save_index_cache(root, cache_data)
+
+    # Clear search cache on reindex
+    _search_cache.clear()
+
     return {
-        **state,
+        "files": files,
+        "idf": idf,
+        "avg_dl": avg_dl,
+        "tf_dict": tf_dict,
+        "tree": tree,
         "folder": str(root),
         "file_count": len(files),
         "embedding_mode": embedding_mode,
+        "dep_graph": dep_graph,
+        "index_time": round(elapsed, 2),
+        "mode": mode,
     }

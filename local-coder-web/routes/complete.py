@@ -1,5 +1,8 @@
 """
 Complete route — /api/complete (code completion).
+
+Improvements:
+- #61 Connection pooling via shared httpx client
 """
 from __future__ import annotations
 
@@ -7,11 +10,11 @@ import re as re2
 import json
 from typing import Any
 
-import httpx
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, BaseModel as PydanticBaseModel
+from pydantic import BaseModel as PydanticBaseModel
 
 from config import LLAMA_URL
+from app import get_http_client  # #61
 
 router = APIRouter()
 
@@ -28,23 +31,27 @@ class CompleteResponse(PydanticBaseModel):
 
 
 @router.post("/api/complete")
-def code_complete(req: CompleteRequest) -> CompleteResponse:
+async def code_complete(req: CompleteRequest) -> CompleteResponse:
     if not req.code or not req.code.strip():
         return CompleteResponse(completions=[])
 
-    prompt = f"""Complete the following code. Provide up to 5 possible completions.
-Return in JSON format: [{{"text": "completion text", "description": "what this does"}}]
+    before_cursor = req.code[:req.cursor_pos]
+    after_cursor = req.code[req.cursor_pos:]
 
-Current code:
+    prompt = f"""Complete the following code. Provide up to 5 possible completions for the cursor position.
+Return ONLY a JSON array: [{"text": "completion", "description": "what this does"}]
+
+Current code (| is cursor):
 ```
-{req.code}
+{before_cursor}|{after_cursor}
 ```
-Cursor position: {req.cursor_pos}
+File: {req.file_path}
 
 Completions:"""
 
     try:
-        response = httpx.post(
+        client = get_http_client()  # #61 connection pooling (sync function, no await)
+        response = await client.post(
             LLAMA_URL,
             json={
                 "messages": [

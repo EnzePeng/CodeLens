@@ -114,8 +114,9 @@ MEMORY_EPISODIC_MAX = 8
 SUMMARIZE_MAX_TOKENS = 256
 SUMMARIZE_TEMPERATURE = 0.1
 
-# Security: dangerous command patterns
+# Security: dangerous command patterns (literal substring matches)
 DANGEROUS_PATTERNS = [
-    "rm -rf /", "mkfs", "dd if=", ">:", "|:",
-    "curl.*| sh", "wget.*| sh", "python.*| sh",
+    "rm -rf", "mkfs", "dd if=", ">: ", "|: ",
+    "curl ", "wget ", "python -c", "perl -e", "bash -c", "sh -c",
+    "$(", "`", "&&", "||",
 ]

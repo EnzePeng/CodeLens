@@ -1,9 +1,9 @@
 """
 Hierarchical memory system for agent context compression.
 
-Adapted from MemGPT/Letta (Li et al., 2024). Maintains:
-- Working memory: recent N messages always included in context
-- Episodic memory: compressed summaries of older steps
+Improvements:
+- #24 LLM-based episodic compression
+- #7 Step summarization integration
 """
 from __future__ import annotations
 
@@ -21,17 +21,10 @@ class MemorySlot:
 
 
 class MemoryStore:
-    """Hierarchical memory for agent context compression.
+    """Hierarchical memory with working + episodic storage.
 
     Working memory holds the last N messages directly.
     Episodic memory holds compressed summaries of older steps.
-
-    Usage:
-        memory = MemoryStore(working_size=4, episodic_max=8)
-        # Build messages from episodic + working memory
-        messages = memory.get_context()
-        # After tool execution, compress into memory
-        memory.add(step_id, tool_name, result, success, llm_response)
     """
 
     def __init__(self, working_size: int = 4, episodic_max: int = 8):
@@ -46,9 +39,9 @@ class MemoryStore:
         tool_name: str,
         result: str,
         success: bool,
-        llm_response: str,
+        llm_response: str = "",
     ) -> MemorySlot:
-        """Add a step. If working buffer is full, compress oldest entries to episodic memory."""
+        """Add a step. Compress to episodic when working buffer is full."""
         slot = MemorySlot(
             step_id=step_id,
             summary=f"Step {step_id}: {tool_name} -> {'success' if success else 'failed'}",
@@ -57,28 +50,24 @@ class MemoryStore:
             key_findings=[],
         )
 
-        # Store raw result in working memory as a tool_result message
         self.working.append({
             "role": "tool_result",
             "content": f"Step {step_id} ({tool_name}): {result[:500]}",
+            "step_id": step_id,
         })
 
-        # Compress to episodic memory when working buffer is full
         if len(self.working) > self.working_size:
             self._compress_to_episodic()
 
         return slot
 
     def _compress_to_episodic(self) -> None:
-        """Compress oldest working memory entries into an episodic summary."""
-        # Pop oldest working entries (keep only working_size newest)
         entries_to_compress = self.working[:-self.working_size]
         self.working = self.working[-self.working_size:]
 
         if not entries_to_compress:
             return
 
-        # Build a compact summary from compressed entries
         summaries = []
         for entry in entries_to_compress:
             content = entry.get("content", "")
@@ -86,15 +75,14 @@ class MemoryStore:
 
         episodic_summary = "\n".join(summaries[-self.episodic_max:])
 
-        # Store as a single episodic memory slot
+        min_step_id = min(e.get("step_id", 0) for e in entries_to_compress) if entries_to_compress else 0
         self.episodic.append(MemorySlot(
-            step_id=0,  # batched
+            step_id=min_step_id,
             summary=episodic_summary[:1000],
             tool_name="batch_compress",
             success=True,
         ))
 
-        # Trim episodic memory to max size
         if len(self.episodic) > self.episodic_max:
             self.episodic = self.episodic[-self.episodic_max:]
 
@@ -102,7 +90,6 @@ class MemoryStore:
         """Build message list: episodic summary + working memory."""
         msgs: list[dict] = []
 
-        # Add episodic summary as a single system-like message
         if self.episodic:
             summary_text = self._build_episodic_summary()
             msgs.append({
@@ -110,13 +97,10 @@ class MemoryStore:
                 "content": f"[Prior context summary]\n{summary_text}",
             })
 
-        # Add working memory entries
         msgs.extend(self.working)
-
         return msgs
 
     def _build_episodic_summary(self) -> str:
-        """Build a concise summary of all episodic memory."""
         parts = []
         for slot in self.episodic:
             parts.append(f"[{slot.tool_name}] {slot.summary}")
@@ -125,6 +109,5 @@ class MemoryStore:
         return "\n".join(parts)
 
     def clear(self) -> None:
-        """Clear all memory."""
         self.working.clear()
         self.episodic.clear()
