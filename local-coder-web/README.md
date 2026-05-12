@@ -14,11 +14,15 @@
 - **Agent 模式能力**：
   - **Plan-then-Apply**：先生成修改计划，逐项预览 diff，确认后批量执行
   - **Phase 指示器**：实时显示分析 → 规划 → 预览 → 执行 → 完成
-  - **Diff 预览**：逐项 approve/reject，支持全部批准/全部拒绝
-  - **11 种工具**：read_file, write_file, edit_file, apply_diff, search_files, list_directory, run_command, git_operation, undo_edit, diff_preview, file_operations, code_analysis, test, project
+  - **Diff 预览**：逐项 approve/reject，支持全部批准/全部拒绝，剩余计数 + 超时提醒
+  - **Self-Reflection**：写入工具执行前自我反思，Read-only 工具智能跳过（避免重复 LLM 调用）
+  - **错误恢复**：工具执行失败后自动分析并重试（最多 N 次）
+  - **4 策略 Plan 解析**：plan/json 块、文件路径标签、已知语言标签 + 上下文路径提取
+  - **14 种工具**：read_file, write_file, edit_file, apply_diff, search_files, list_directory, run_command, git_operation, undo_edit, diff_preview, file_operations, code_analysis, test, project
   - **安全白名单**：run_command 支持命令白名单 + 危险模式检测
   - **Undo/Redo**：持久化编辑历史到 JSON，支持撤销和重做
   - **执行可视化**：实时显示步骤时间线、工具调用、执行进度
+  - **全屏分栏**：Agent 面板全屏模式左右分栏（预览/应用 | 时间线/输出）
 - **对话历史管理**：`ChatHistory` 服务，跨会话上下文管理，自动裁剪
 - **目录选择**：内置文件夹浏览器，一键选择代码目录
 - **离线运行**：无需联网，本地模型即可工作
@@ -78,7 +82,7 @@ local-coder-web/
 ├── models/
 │   └── __init__.py     # Pydantic 模型 + CodeFile + extract_symbols
 ├── core/
-│   ├── agent.py        # AgentLoop（Plan-then-Apply 架构）
+│   ├── agent.py        # Agent 引擎（Plan-then-Apply + Self-Reflection + 4 策略 Plan 解析）
 │   ├── tools/
 │   │   ├── base.py     # Tool ABC + ToolRegistry
 │   │   ├── read_file.py
@@ -105,12 +109,14 @@ local-coder-web/
 │   ├── ask.py          # /api/ask + /api/craft-apply
 │   ├── files.py        # /api/set-folder + /api/read-file + /api/exec
 │   ├── complete.py     # /api/complete
-│   └── agent.py        # /api/agent/*（Agent 生命周期）
+│   └── agent.py        # /api/agent/*（Agent 生命周期，共享 ReAct 循环）
 ├── static/
-│   ├── index.html      # 页面入口
-│   ├── app.js          # 前端逻辑（Agent Phase 面板、Diff 预览）
-│   └── styles.css      # 样式（含 Agent Phase/Preview 样式）
-└── tests/              # 71 个测试用例
+│   ├── index.html      # 页面入口（Agent 分栏布局）
+│   ├── app.js          # 前端逻辑（编程式 DOM Diff 预览）
+│   └── styles.css      # 样式（Agent 全屏分栏）
+└── tests/
+    ├── unit/           # 单元测试
+    └── integration/    # 集成测试
 ```
 
 ## 模式说明
@@ -323,6 +329,17 @@ node_modules, dist, build, .next, .nuxt, .turbo,
 ---
 
 ## 版本历史
+
+### v0.6.1 (2026-05-13) - Agent 稳定性与 UI 优化
+- 🐛 **Bug 修复**：tools 变量未定义导致 Plan 生成崩溃（`routes/agent.py:366`）
+- 🧠 **逻辑修复**：Read-only 工具跳过 self-reflection，消除重复 LLM 调用（`READ_ONLY_TOOLS`）
+- 🔄 **代码去重**：抽取 `_run_react_loop` 异步生成器，消除两处 ~150 行 ReAct 循环重复
+- 📋 **Plan 解析增强**：`generate_plan` 支持 4 种解析策略（plan/json 块、文件路径标签、已知语言标签 + 路径提取）
+- 🎨 **Diff 预览重写**：`renderDiffPreview` 使用编程式 DOM 构建，解决 `data-path` HTML 转义损坏问题
+- ✅ **审批流程完善**：显示剩余文件计数、3 分钟超时提醒、全部决定后自动执行
+- 📐 **编辑器全屏修复**：Tab bar z-index 管理，全屏模式下关闭按钮可见
+- 🖥️ **Agent 全屏分栏**：全屏模式左右分栏（45% 预览/应用 + 55% 时间线/输出）
+- 🧹 **测试清理**：移除过时测试文件，新建 unit/integration 测试目录
 
 ### v0.6 (2026-05-09) - 全面重构 (Cursor-级别 Agent)
 - 🏗️ **架构重构**：拆分 routes 模块（ask.py/files.py/complete.py），新建 services/indexer.py 统一索引逻辑

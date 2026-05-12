@@ -10,6 +10,17 @@ const askForm       = document.querySelector("#askForm");
 const questionInput = document.querySelector("#questionInput");
 const askBtn        = document.querySelector("#askBtn");
 const messages      = document.querySelector("#messages");
+if (messages) {
+  messages.addEventListener("click", (e) => {
+    const link = e.target.closest("a.file-path");
+    if (!link) return;
+    e.preventDefault();
+    const p = link.getAttribute("data-path");
+    if (!p || typeof window.openFileViewer !== "function") return;
+    const name = p.split(/[/\\]/).pop() || p;
+    window.openFileViewer(p, name, "");
+  });
+}
 const modeSelect    = document.querySelector("#modeSelect");
 const workspace     = document.querySelector(".workspace");
 const clearBtn      = document.querySelector("#clearBtn");
@@ -85,6 +96,9 @@ let isBusy = false;
 let currentMode = "ask";
 let messageHistory = [];
 let currentTreeData = null;  // Store tree JSON for re-rendering
+let terminalHistory = [];
+let terminalHistoryIndex = -1;
+let terminalHistoryBrowse = null; // null = editing fresh; number = browsing history index
 
 // Model settings (loaded from server)
 let modelSettings = {
@@ -132,9 +146,10 @@ const EXT_TO_LANG = {
 /* ─── Busy control ────────────────────────────────────────────── */
 function setBusy(busy) {
   isBusy = busy;
-  setFolderBtn.disabled = busy;
-  askBtn.disabled = busy || !folderStatus.dataset.ready;
-  questionInput.disabled = busy || !folderStatus.dataset.ready;
+  if (setFolderBtn) setFolderBtn.disabled = busy;
+  const ready = folderStatus?.dataset?.ready;
+  if (askBtn) askBtn.disabled = busy || !ready;
+  if (questionInput) questionInput.disabled = busy || !ready;
   if (clearBtn) clearBtn.disabled = busy;
 }
 
@@ -200,12 +215,13 @@ if (contextLimitSelect) {
 function updateContextDisplay(used, total) {
   currentContextUsed = used;
   const totalChars = total || modelSettings.contextLimit;
-  contextUsed.textContent = used.toLocaleString();
-  contextTotal.textContent = totalChars.toLocaleString();
+  if (contextUsed) contextUsed.textContent = used.toLocaleString();
+  if (contextTotal) contextTotal.textContent = totalChars.toLocaleString();
   const percent = totalChars > 0 ? Math.min((used / totalChars) * 100, 100) : 0;
-  contextBarUsed.style.width = percent + "%";
-  
+  if (contextBarUsed) contextBarUsed.style.width = percent + "%";
+
   // Color based on usage
+  if (!contextBarUsed) return;
   if (percent > 85) {
     contextBarUsed.style.background = "#e8a8a8";
   } else if (percent > 60) {
@@ -584,9 +600,28 @@ fileOverlay.addEventListener("click", (e) => {
   if (e.target === fileOverlay) fileOverlay.classList.add("hidden");
 });
 
-// Escape key closes file viewer
+// Escape key closes file viewer and dir overlay, also exits fullscreen modes
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
+    // Exit agent fullscreen first
+    if (agentPanel && agentPanel.classList.contains("fullscreen")) {
+      agentPanel.classList.remove("fullscreen");
+      const afb = document.querySelector("#agentFullscreenBtn");
+      if (afb) { afb.textContent = "⛶"; afb.title = "全屏"; }
+      return;
+    }
+    // Exit editor fullscreen
+    if (editorArea && editorArea.classList.contains("fullscreen")) {
+      editorArea.classList.remove("fullscreen");
+      const tabBar = document.querySelector(".tab-bar");
+      if (tabBar) tabBar.classList.remove("editor-fullscreen-visible");
+      if (editorFullscreenBtn) {
+        editorFullscreenBtn.textContent = "⛶";
+        editorFullscreenBtn.title = "编辑器全屏";
+      }
+      setTimeout(() => { if (codeMirrorEditor) codeMirrorEditor.refresh(); }, 300);
+      return;
+    }
     if (!fileOverlay.classList.contains("hidden")) {
       fileOverlay.classList.add("hidden");
     } else if (!dirOverlay.classList.contains("hidden")) {
@@ -751,7 +786,7 @@ async function streamAsk(question) {
     bubble.thinkingPanel.remove();
     bubble.contentEl.textContent = `请求失败：${err.message}`;
   } finally {
-    const btnLabels = { ask: "发送", plan: "规划", craft: "编辑" };
+    const btnLabels = { ask: "发送", plan: "规划", craft: "编辑", agent: "执行" };
     askBtn.textContent = btnLabels[currentMode] || "发送";
     setBusy(false);
     questionInput.focus();
@@ -792,7 +827,7 @@ function _processRawBuffer(raw, bubble) {
     bubble.thinkingPanel.classList.add("hidden");
   }
 
-  bubble.contentEl.textContent = answerText;
+  bubble.contentEl.innerHTML = makeFilePathsClickable(renderMarkdown(answerText));
 }
 
 /* ─── Final render after stream complete ─────────────────────── */
@@ -1340,6 +1375,42 @@ function initTerminal() {
   term.loadAddon(fitAddon);
   term.open(terminalContainer);
   fitAddon.fit();
+
+  function redrawTerminalInputLine() {
+    term.write("\r\x1b[2K");
+    term.write("\x1b[1;32m$\x1b[0m ");
+    term.write(currentLine);
+  }
+
+  term.attachCustomKeyEventHandler((domEvent) => {
+    if (domEvent.type !== "keydown") return false;
+    if (domEvent.key === "ArrowUp") {
+      domEvent.preventDefault();
+      if (terminalHistory.length === 0) return true;
+      if (terminalHistoryBrowse === null) {
+        terminalHistoryBrowse = terminalHistory.length - 1;
+      } else {
+        terminalHistoryBrowse = Math.max(0, terminalHistoryBrowse - 1);
+      }
+      currentLine = terminalHistory[terminalHistoryBrowse] || "";
+      redrawTerminalInputLine();
+      return true;
+    }
+    if (domEvent.key === "ArrowDown") {
+      domEvent.preventDefault();
+      if (terminalHistoryBrowse === null) return true;
+      if (terminalHistoryBrowse >= terminalHistory.length - 1) {
+        terminalHistoryBrowse = null;
+        currentLine = "";
+      } else {
+        terminalHistoryBrowse += 1;
+        currentLine = terminalHistory[terminalHistoryBrowse] || "";
+      }
+      redrawTerminalInputLine();
+      return true;
+    }
+    return false;
+  });
   
   // Welcome message
   term.writeln('\x1b[1;36m╔════════════════════════════════════════════════╗\x1b[0m');
@@ -1358,6 +1429,7 @@ function initTerminal() {
     
     if (code === 13) { // Enter
       term.writeln('');
+      terminalHistoryBrowse = null;
       if (currentLine.trim()) {
         executeCommand(currentLine.trim());
       } else {
@@ -1365,6 +1437,7 @@ function initTerminal() {
       }
       currentLine = '';
     } else if (code === 127 || code === 8) { // Backspace
+      terminalHistoryBrowse = null;
       if (currentLine.length > 0) {
         currentLine = currentLine.slice(0, -1);
         term.write('\b \b');
@@ -1373,7 +1446,9 @@ function initTerminal() {
       term.writeln('^C');
       term.write('\x1b[1;32m$\x1b[0m ');
       currentLine = '';
+      terminalHistoryBrowse = null;
     } else if (code >= 32) { // Printable characters
+      terminalHistoryBrowse = null;
       currentLine += data;
       term.write(data);
     }
@@ -1386,6 +1461,10 @@ function initTerminal() {
 }
 
 async function executeCommand(cmd) {
+  if (cmd) {
+    terminalHistory.push(cmd);
+    terminalHistoryIndex = terminalHistory.length;
+  }
   const originalCwd = currentCwd;
   
   // Convert Unix commands to Windows equivalents
@@ -1534,6 +1613,55 @@ if (closeTerminalBtn) {
 let openTabs = [];  // { path, name, content, modified }
 let activeTabIndex = -1;
 let codeMirrorEditor = null;
+let editorClosed = false;
+
+// Editor close button
+const editorCloseBtn = document.querySelector("#editorCloseBtn");
+const editorFullscreenBtn = document.querySelector("#editorFullscreenBtn");
+
+if (editorCloseBtn) {
+  editorCloseBtn.addEventListener("click", () => {
+    const tabBar = document.querySelector(".tab-bar");
+    if (editorArea.classList.contains("fullscreen")) {
+      editorArea.classList.remove("fullscreen");
+      if (tabBar) tabBar.classList.remove("editor-fullscreen-visible");
+    }
+    editorArea.classList.add("collapsed");
+    editorClosed = true;
+    messagesArea.classList.remove("has-editor");
+    messagesArea.style.maxHeight = "";
+    messagesArea.style.flex = "1";
+  });
+}
+
+if (editorFullscreenBtn) {
+  editorFullscreenBtn.addEventListener("click", () => {
+    const tabBar = document.querySelector(".tab-bar");
+    if (editorArea.classList.contains("fullscreen")) {
+      // Exit fullscreen
+      editorArea.classList.remove("fullscreen");
+      editorFullscreenBtn.textContent = "⛶";
+      editorFullscreenBtn.title = "编辑器全屏";
+      if (tabBar) tabBar.classList.remove("editor-fullscreen-visible");
+      if (editorClosed) {
+        editorArea.classList.add("collapsed");
+      }
+    } else {
+      // Enter fullscreen
+      editorArea.classList.remove("collapsed");
+      editorClosed = false;
+      editorArea.classList.add("fullscreen");
+      if (tabBar) tabBar.classList.add("editor-fullscreen-visible");
+      editorFullscreenBtn.textContent = "⛶";
+      editorFullscreenBtn.title = "退出全屏";
+      messagesArea.classList.add("has-editor");
+    }
+    // Refit CodeMirror after transition
+    setTimeout(() => {
+      if (codeMirrorEditor) codeMirrorEditor.refresh();
+    }, 300);
+  });
+}
 
 // CodeMirror mode map
 const CM_MODE_MAP = {
@@ -1617,17 +1745,17 @@ function initCodeMirror(content = "", mode = "text") {
 function openFileInTab(filePath, fileName, content) {
   // Check if already open
   const existingIndex = openTabs.findIndex(t => t.path === filePath);
-  
+
   if (existingIndex >= 0) {
     // Switch to existing tab
     switchToTab(existingIndex);
     return;
   }
-  
+
   // Get file extension
   const ext = fileName.includes(".") ? "." + fileName.split(".").pop().toLowerCase() : "";
   const mode = getCmMode(ext);
-  
+
   // Add new tab
   openTabs.push({
     path: filePath,
@@ -1636,13 +1764,26 @@ function openFileInTab(filePath, fileName, content) {
     modified: false,
     mode: mode,
   });
-  
+
   switchToTab(openTabs.length - 1);
-  
+
+  // Auto-show editor if it was closed
+  if (editorClosed) {
+    editorArea.classList.remove("collapsed");
+    editorArea.classList.remove("fullscreen");
+    editorClosed = false;
+    const tabBar = document.querySelector(".tab-bar");
+    if (tabBar) tabBar.classList.remove("editor-fullscreen-visible");
+    if (editorFullscreenBtn) {
+      editorFullscreenBtn.textContent = "⛶";
+      editorFullscreenBtn.title = "编辑器全屏";
+    }
+  }
+
   // Show editor, hide welcome
   const welcome = editorContainer.querySelector(".editor-welcome");
   if (welcome) welcome.style.display = "none";
-  
+
   // Adjust messages area
   messagesArea.classList.add("has-editor");
 }
@@ -1683,16 +1824,32 @@ function closeTab(index) {
   if (activeTabIndex >= 0) {
     switchToTab(activeTabIndex);
   } else {
-    // No more tabs, show welcome
-    const welcome = editorContainer.querySelector(".editor-welcome");
-    if (welcome) welcome.style.display = "block";
-    
+    // Exit fullscreen if no more tabs
+    if (editorArea.classList.contains("fullscreen")) {
+      editorArea.classList.remove("fullscreen");
+      const tabBar = document.querySelector(".tab-bar");
+      if (tabBar) tabBar.classList.remove("editor-fullscreen-visible");
+      if (editorFullscreenBtn) {
+        editorFullscreenBtn.textContent = "⛶";
+        editorFullscreenBtn.title = "编辑器全屏";
+      }
+    }
+
+    // No more tabs, show welcome (but keep editor visible unless manually closed)
+    if (!editorClosed) {
+      const welcome = editorContainer.querySelector(".editor-welcome");
+      if (welcome) welcome.style.display = "block";
+    }
+
     // Remove editor
     const wrapper = editorContainer.querySelector(".CodeMirror-wrapper");
     if (wrapper) wrapper.remove();
     codeMirrorEditor = null;
-    
+
     messagesArea.classList.remove("has-editor");
+    if (!editorClosed) {
+      messagesArea.style.maxHeight = "";
+    }
   }
   
   updateTabUI();
@@ -2003,7 +2160,7 @@ window.initCodeMirror = function(content = "", mode = "text") {
 /* ─── Agent Mode Functions ──────────────────────────────────────── */
 
 async function startAgentTask(query) {
-  if (!folderStatus.dataset.ready) {
+  if (!folderStatus?.dataset?.ready) {
     alert("请先设置代码文件夹");
     return;
   }
@@ -2046,15 +2203,15 @@ async function startAgentTask(query) {
 // Agent control button event listeners
 if (agentPauseBtn) agentPauseBtn.addEventListener("click", () => {
   if (!agentTaskId) return;
-  // Toggle pause/resume
-  const isPaused = agentPauseBtn.textContent.includes("继续");
+  const showingResume = agentPauseBtn.textContent.includes("▶️");
+  const action = showingResume ? "resume" : "pause";
   fetch(`/api/agent/action`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ task_id: agentTaskId, action: isPaused ? "resume" : "pause" }),
+    body: JSON.stringify({ task_id: agentTaskId, action }),
   }).catch(e => console.error("Pause/resume failed:", e));
-  agentPauseBtn.textContent = isPaused ? "⏸️" : "▶️";
-  agentPauseBtn.title = isPaused ? "暂停" : "继续";
+  agentPauseBtn.textContent = showingResume ? "⏸️" : "▶️";
+  agentPauseBtn.title = showingResume ? "暂停" : "继续";
 });
 
 if (agentStopBtn) agentStopBtn.addEventListener("click", () => {
@@ -2069,9 +2226,41 @@ if (agentStopBtn) agentStopBtn.addEventListener("click", () => {
 });
 
 if (closeAgentBtn) closeAgentBtn.addEventListener("click", () => {
-  if (agentPanel) agentPanel.classList.add("hidden");
+  if (agentPanel) {
+    agentPanel.classList.remove("fullscreen");
+    agentPanel.classList.remove("preview-phase");
+    agentPanel.classList.add("hidden");
+  }
+  const agentFullscreenBtn = document.querySelector("#agentFullscreenBtn");
+  if (agentFullscreenBtn) {
+    agentFullscreenBtn.textContent = "⛶";
+    agentFullscreenBtn.title = "全屏";
+  }
+  // Clear approval timeout if any
+  if (window._approvalTimeout) clearTimeout(window._approvalTimeout);
   // Don't clear agentTaskId — agent may still be running in background
 });
+
+// Agent fullscreen toggle
+const agentFullscreenBtn = document.querySelector("#agentFullscreenBtn");
+if (agentFullscreenBtn) {
+  agentFullscreenBtn.addEventListener("click", () => {
+    if (!agentPanel) return;
+    if (agentPanel.classList.contains("fullscreen")) {
+      // Exit fullscreen
+      agentPanel.classList.remove("fullscreen");
+      agentFullscreenBtn.textContent = "⛶";
+      agentFullscreenBtn.title = "全屏";
+    } else {
+      // Enter fullscreen
+      agentPanel.classList.add("fullscreen");
+      agentFullscreenBtn.textContent = "⛶";
+      agentFullscreenBtn.title = "退出全屏";
+    }
+    // Re-scroll output to bottom
+    if (agentOutput) agentOutput.scrollTop = agentOutput.scrollHeight;
+  });
+}
 
 async function streamAgentExecution(taskId) {
   appendAgentOutput("🤖 Agent 正在思考...", "thinking");
@@ -2095,15 +2284,18 @@ async function streamAgentExecution(taskId) {
       const { done, value } = await reader.read();
       if (done) break;
 
-      sseBuffer += decoder.decode(value, { stream: true });
+      sseBuffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
       const lines = sseBuffer.split("\n");
-      sseBuffer = lines.pop();
+      sseBuffer = lines.pop() ?? "";
 
       for (const line of lines) {
-        if (!line.startsWith("data:")) continue;
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const jsonStr = trimmed.slice(5).trim();
+        if (!jsonStr || jsonStr === "[DONE]") continue;
 
         try {
-          const data = JSON.parse(line.slice(5));
+          const data = JSON.parse(jsonStr);
           handleAgentEvent(data);
         } catch (e) {
           // Skip invalid JSON (partial line handled by buffer)
@@ -2128,22 +2320,35 @@ function handleAgentEvent(data) {
       appendAgentOutput("🤔 思考中...", "thinking");
       break;
       
-    case "llm_response":
-      appendAgentOutput(`💡 ${data.content.slice(0, 500)}`, "info");
+    case "llm_response": {
+      const raw = data.content != null ? String(data.content) : "";
+      // Strip <think>...</think> tags
+      const clean = raw.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+      if (clean) {
+        // Show non-think content (usually tool call JSON or task response)
+        appendAgentOutput(`💡 ${clean.slice(0, 600)}`, "info");
+      } else {
+        // Entire response was thinking — show a brief pulse so user knows it's alive
+        appendAgentOutput(`💭 模型推理中... (${raw.length} chars)`, "thinking");
+      }
       break;
+    }
       
     case "tool_call":
       addAgentStep(data.tool, "running");
       appendAgentOutput(`🔧 调用工具: ${data.tool}`, "tool-call");
       break;
       
-    case "tool_result":
-      appendAgentOutput(`✅ 结果: ${data.result.slice(0, 200)}...`, "tool-result");
+    case "tool_result": {
+      const r = data.result != null ? String(data.result) : "";
+      const preview = r.length > 200 ? r.slice(0, 200) + "..." : r;
+      appendAgentOutput(`✅ 结果: ${preview}`, "tool-result");
       updateAgentStep(data.tool, "success");
       break;
+    }
       
     case "tool_error":
-      appendAgentOutput(`❌ 工具错误: ${data.error}`, "error");
+      appendAgentOutput(`❌ 工具错误: ${data.error != null ? data.error : "(unknown)"}`, "error");
       updateAgentStep(data.tool, "failed");
       break;
       
@@ -2210,7 +2415,7 @@ function updateAgentStep(toolName, status) {
 
 function appendAgentOutput(text, className) {
   if (!agentOutput) return;
-  
+
   const line = document.createElement("div");
   line.className = className || "";
   line.textContent = text;
@@ -2264,94 +2469,133 @@ function renderDiffPreview(planData) {
   countEl.textContent = `${files.length} 个文件待确认`;
 
   filesContainer.innerHTML = "";
-  files.forEach((fcp) => {
+  files.forEach((fcp, idx) => {
     const fileEl = document.createElement("div");
     fileEl.className = "preview-file";
-    fileEl.dataset.path = fcp.path;
 
-    // Parse diff stats
-    const addedMatch = fcp.diff?.match(/^\+[^-]/gm);
-    const removedMatch = fcp.diff?.match(/^-[^+]/gm);
-    const added = addedMatch ? addedMatch.length : 0;
-    const removed = removedMatch ? removedMatch.length : 0;
+    // Parse diff stats from diff field or estimate from new_content
+    let added = 0, removed = 0;
+    if (fcp.diff && fcp.diff !== "(auto-generated diff)") {
+      const addedMatch = fcp.diff.match(/^\+[^-]/gm);
+      const removedMatch = fcp.diff.match(/^-[^+]/gm);
+      added = addedMatch ? addedMatch.length : 0;
+      removed = removedMatch ? removedMatch.length : 0;
+    }
+    const newLines = (fcp.new_content || "").split("\n").length;
+    if (added === 0 && removed === 0 && newLines > 0) added = newLines;
 
     const statsClass = added > removed ? "added" : removed > added ? "removed" : "";
-    const statsText = `${added > 0 ? "+" + added : ""}${removed > 0 ? "-" + removed : ""}`;
+    const statsText = added > 0 ? `+${added}` : removed > 0 ? `-${removed}` : `~${newLines}行`;
 
-    // Truncate diff preview to 20 lines
-    const diffLines = (fcp.diff || "").split("\n").slice(0, 20);
-    const diffPreview = diffLines.join("\n") + (diffLines.length >= 20 ? "\n... (更多)" : "");
+    // Show code preview: if diff exists and isn't auto-generated, show it; otherwise show new_content
+    let contentPreview;
+    if (fcp.diff && fcp.diff !== "(auto-generated diff)") {
+      const diffLines = fcp.diff.split("\n").slice(0, 25);
+      contentPreview = diffLines.join("\n") + (diffLines.length >= 25 ? "\n..." : "");
+    } else if (fcp.new_content) {
+      const codeLines = fcp.new_content.split("\n").slice(0, 30);
+      contentPreview = codeLines.join("\n") + (codeLines.length >= 30 ? "\n..." : "");
+    } else {
+      contentPreview = "(无内容预览)";
+    }
 
-    fileEl.innerHTML = `
-      <div class="preview-file-header">
-        <span class="preview-path">${escapeHtml(fcp.path)}</span>
-        <span class="preview-stats ${statsClass}">${statsText}</span>
-        <div class="preview-actions">
-          <button class="preview-approve" data-path="${escapeHtml(fcp.path)}" title="批准">✅ 批准</button>
-          <button class="preview-reject" data-path="${escapeHtml(fcp.path)}" title="拒绝">❌ 拒绝</button>
-        </div>
-      </div>
-      <div class="preview-diff">${escapeHtml(diffPreview)}</div>
-    `;
+    // Use raw path in closure, NOT escaped in data-path
+    const rawPath = fcp.path;
+
+    // Build header with inline onclick to avoid data-path escaping issues
+    const header = document.createElement("div");
+    header.className = "preview-file-header";
+
+    const pathSpan = document.createElement("span");
+    pathSpan.className = "preview-path";
+    pathSpan.textContent = rawPath;
+
+    const statsSpan = document.createElement("span");
+    statsSpan.className = `preview-stats ${statsClass}`;
+    statsSpan.textContent = statsText;
+
+    const actionsDiv = document.createElement("div");
+    actionsDiv.className = "preview-actions";
+
+    const approveBtn = document.createElement("button");
+    approveBtn.className = "preview-approve";
+    approveBtn.textContent = "✅ 批准";
+    approveBtn.title = "批准此文件的修改";
+    approveBtn.onclick = function() {
+      approveFile(rawPath);
+      this.classList.add("approved");
+      this.textContent = "✅ 已批";
+      this.disabled = true;
+      const reject = this.parentElement.querySelector(".preview-reject");
+      if (reject) reject.disabled = true;
+    };
+
+    const rejectBtn = document.createElement("button");
+    rejectBtn.className = "preview-reject";
+    rejectBtn.textContent = "❌ 拒绝";
+    rejectBtn.title = "拒绝此文件的修改";
+    rejectBtn.onclick = function() {
+      rejectFile(rawPath);
+      this.classList.add("rejected");
+      this.textContent = "❌ 已拒";
+      this.disabled = true;
+      const approve = this.parentElement.querySelector(".preview-approve");
+      if (approve) approve.disabled = true;
+    };
+
+    actionsDiv.append(approveBtn, rejectBtn);
+    header.append(pathSpan, statsSpan, actionsDiv);
+    fileEl.appendChild(header);
+
+    const contentDiv = document.createElement("div");
+    contentDiv.className = "preview-content";
+    contentDiv.textContent = contentPreview;
+    fileEl.appendChild(contentDiv);
 
     filesContainer.appendChild(fileEl);
     currentAgentPlanFiles.push(fcp);
-  });
-
-  // Attach event listeners
-  preview.querySelectorAll(".preview-approve").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const path = btn.dataset.path;
-      approveFile(path);
-      btn.classList.add("approved");
-      btn.textContent = "✅ 已批";
-      btn.disabled = true;
-      // Disable reject button
-      const rejectBtn = btn.parentElement.querySelector(".preview-reject");
-      if (rejectBtn) {
-        rejectBtn.disabled = true;
-      }
-    });
-  });
-
-  preview.querySelectorAll(".preview-reject").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const path = btn.dataset.path;
-      rejectFile(path);
-      btn.classList.add("rejected");
-      btn.textContent = "❌ 已拒";
-      btn.disabled = true;
-      const approveBtn = btn.parentElement.querySelector(".preview-approve");
-      if (approveBtn) {
-        approveBtn.disabled = true;
-      }
-    });
   });
 
   // Global actions
   const approveAllBtn = document.getElementById("previewApproveAllBtn");
   const rejectAllBtn = document.getElementById("previewRejectAllBtn");
   if (approveAllBtn) {
-    approveAllBtn.addEventListener("click", () => {
+    approveAllBtn.onclick = () => {
       preview.querySelectorAll(".preview-approve:not([disabled])").forEach((btn) => {
         btn.click();
       });
-    });
+    };
   }
   if (rejectAllBtn) {
-    rejectAllBtn.addEventListener("click", () => {
+    rejectAllBtn.onclick = () => {
       preview.querySelectorAll(".preview-reject:not([disabled])").forEach((btn) => {
         btn.click();
       });
-    });
+    };
   }
 
+  // Expand agent panel for preview
+  if (agentPanel) {
+    agentPanel.classList.add("preview-phase");
+  }
   preview.classList.remove("hidden");
+  preview.scrollIntoView({ behavior: "smooth", block: "start" });
+
+  // Approval timeout: remind user after 3 minutes of inactivity
+  if (window._approvalTimeout) clearTimeout(window._approvalTimeout);
+  window._approvalTimeout = setTimeout(() => {
+    const remaining = document.querySelectorAll(".preview-approve:not([disabled])").length;
+    if (remaining > 0 && agentPanel && !agentPanel.classList.contains("hidden")) {
+      appendAgentOutput(`⏰ 提醒: 还有 ${remaining} 个文件待审批，请点击「✅ 批准」或「❌ 拒绝」`, "info");
+    }
+  }, 180000);
 }
 
 function hideDiffPreview() {
   const el = document.querySelector("#agentPreview");
   if (el) el.classList.add("hidden");
+  if (agentPanel) agentPanel.classList.remove("preview-phase");
+  if (window._approvalTimeout) { clearTimeout(window._approvalTimeout); window._approvalTimeout = null; }
 }
 
 async function approveFile(path) {
@@ -2363,27 +2607,30 @@ async function approveFile(path) {
       body: JSON.stringify({ task_id: agentTaskId, action: "confirm", tool_call_id: path }),
     });
     const data = await resp.json().catch(() => ({}));
-    
+
     if (data.status === "applied") {
-      // All files approved and applied — show results
-      appendAgentOutput("⚙️ 正在应用修改...", "info");
+      // All files approved — applying now
+      appendAgentOutput("⚙️ 正在应用所有已批准的修改...", "info");
       if (data.files) {
         for (const f of data.files) {
           if (f.status === "applied") {
             appendAgentOutput(`✅ 已应用: ${f.path}`, "success");
-            updateApplyStep(f.path, "completed");
           } else if (f.status === "skipped") {
-            appendAgentOutput(`⏭️ 已跳过: ${f.path}`, "info");
+            appendAgentOutput(`⏭️ 跳过 (依赖未满足): ${f.path}`, "info");
           } else if (f.status === "error") {
-            appendAgentOutput(`❌ 失败: ${f.path}`, "error");
+            appendAgentOutput(`❌ 应用失败: ${f.path}`, "error");
+          } else if (f.status === "rejected") {
+            appendAgentOutput(`⊘ 未审批而跳过: ${f.path}`, "info");
           }
         }
       }
+      appendAgentOutput("━━━━━━━━━━━━━━━━━━━━", "info");
       appendAgentOutput(`🎉 ${data.result || "Plan applied"}`, "success");
       hideDiffPreview();
       hideApplyProgress();
       updatePhaseBar("done");
-      // Reindex to update file tree
+      setBusy(false);
+      // Reindex
       try {
         const reindexResp = await fetch("/api/reindex", { method: "POST" });
         const reindexData = await reindexResp.json().catch(() => ({}));
@@ -2396,13 +2643,13 @@ async function approveFile(path) {
           } catch (e) {}
         }
       } catch (e) {}
-      setBusy(false);
     } else if (data.status === "approved") {
-      // Single file approved, waiting for more
-      appendAgentOutput(`✅ 已批准: ${path}`, "success");
+      // Single file approved — count how many left
+      const remaining = document.querySelectorAll(".preview-approve:not([disabled])").length;
+      appendAgentOutput(`✅ 已批准: ${path}（还剩 ${remaining} 个文件待审批）`, "success");
     }
   } catch (e) {
-    console.error("Approve failed:", e);
+    appendAgentOutput(`❌ 审批失败: ${e.message}`, "error");
   }
 }
 
@@ -2415,9 +2662,35 @@ async function rejectFile(path) {
       body: JSON.stringify({ task_id: agentTaskId, action: "reject", tool_call_id: path }),
     });
     const data = await resp.json().catch(() => ({}));
-    appendAgentOutput(`❌ 已拒绝: ${path}`, "error");
+    const remaining = document.querySelectorAll(".preview-approve:not([disabled])").length;
+    appendAgentOutput(`❌ 已拒绝: ${path}（还剩 ${remaining} 个文件待审批）`, "error");
+    // If all files are now decided (none left to approve), offer to apply
+    if (remaining === 0) {
+      const hasApproved = document.querySelectorAll(".preview-approve.approved").length > 0;
+      if (hasApproved) {
+        appendAgentOutput("💡 所有文件已处理完毕。已批准的文件将在下一步应用。", "info");
+        // Auto-apply after short delay
+        setTimeout(() => {
+          const approvedBtns = document.querySelectorAll(".preview-approve.approved");
+          if (approvedBtns.length > 0) {
+            // Trigger apply by re-approving the last approved file (server will detect all approved and apply)
+            const lastApprovedPath = currentAgentPlanFiles
+              .filter(f => f.user_approved)
+              .map(f => f.path)
+              .pop();
+            if (lastApprovedPath) approveFile(lastApprovedPath);
+          }
+        }, 1000);
+      } else {
+        appendAgentOutput("💡 所有文件已被拒绝，任务结束。", "info");
+        hideDiffPreview();
+        hideApplyProgress();
+        updatePhaseBar("done");
+        setBusy(false);
+      }
+    }
   } catch (e) {
-    console.error("Reject failed:", e);
+    appendAgentOutput(`❌ 拒绝失败: ${e.message}`, "error");
   }
 }
 
@@ -2476,9 +2749,34 @@ handleAgentEvent = function(data) {
       setTimeout(hideAgentThinking, 2000);
       break;
 
-    case "plan_generated":
-      showAgentThinking(`已生成修改计划:\n${data.content.slice(0, 300)}...`);
+    case "plan_generated": {
+      const pc = data.content != null ? String(data.content) : "";
+      // Strip think tags for display
+      const clean = pc.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+      showAgentThinking(`已生成修改计划:\n${clean.slice(0, 500)}${clean.length > 500 ? "..." : ""}`);
+      // Also show plan content directly in output so user can see details
+      if (clean) {
+        appendAgentOutput(`📋 计划内容:\n${clean.slice(0, 800)}`, "info");
+      }
       break;
+    }
+
+    case "batch_tool_call": {
+      const count = data.count || 0;
+      const calls = data.calls || [];
+      appendAgentOutput(`📦 批量调用 ${count} 个工具`, "info");
+      calls.forEach(c => {
+        appendAgentOutput(`  └─ ${c.tool}(${JSON.stringify(c.args).slice(0, 100)})`, "info");
+      });
+      break;
+    }
+
+    case "reflection": {
+      if (data.reflection) {
+        appendAgentOutput(`🔍 审查: ${data.reflection.slice(0, 200)}`, "info");
+      }
+      break;
+    }
 
     case "plan_data":
       hideAgentThinking();
@@ -2506,6 +2804,12 @@ handleAgentEvent = function(data) {
 
     case "warning":
       appendAgentOutput(`⚠️ ${data.message}`, "error");
+      break;
+
+    case "paused":
+      appendAgentOutput(`⏸️ ${data.message || "Agent 已暂停"}`, "info");
+      updatePhaseBar("done");
+      setBusy(false);
       break;
 
     default:
@@ -2586,20 +2890,6 @@ function initTreeSearch() {
   });
 }
 
-/* ─── #42 Terminal command history ────────────────────────── */
-let terminalHistory = [];
-let terminalHistoryIndex = -1;
-
-// Override executeCommand to track history
-const _origExecuteCommand = executeCommand;
-if (_origExecuteCommand) {
-  window.executeCommand = async function(cmd) {
-    terminalHistory.push(cmd);
-    terminalHistoryIndex = terminalHistory.length;
-    return _origExecuteCommand(cmd);
-  };
-}
-
 /* ─── #50 SSE retry ────────────────────────────────────── */
 async function streamAskWithRetry(question, maxRetries = 2) {
   let lastError = null;
@@ -2657,6 +2947,7 @@ function showShortcutsModal() {
 
 /* ─── #48 Persistent settings in localStorage ─────────────── */
 function initPersistentSettings() {
+  if (!maxTokensSelect || !temperatureSelect || !contextLimitSelect) return;
   const saved = localStorage.getItem('codelens-settings');
   if (saved) {
     try {
@@ -2706,12 +2997,28 @@ function enhancedRenderMarkdown(md) {
   return html;
 }
 
-/* ─── #37,#38 Clickable file paths in markdown ────────────── */
-function makeFilePathsClickable(text) {
-  // Match common file path patterns
-  return text.replace(/`([a-zA-Z0-9_./\-]+\.[a-zA-Z0-9]+)`/g, (match, path) => {
-    return `<a class="file-path" href="#" data-path="${path}" onclick="event.preventDefault(); openFileViewer('${path}', '${path.split('/').pop()}, '');">${path}</a>`;
-  });
+/* ─── #37,#38 Clickable file paths in rendered markdown ───── */
+function looksLikeFilePath(p) {
+  if (!p || p.length < 2 || /\s/.test(p)) return false;
+  if (/[/\\]/.test(p)) return true;
+  return /\.(py|js|mjs|cjs|ts|tsx|jsx|vue|svelte|html|htm|css|scss|sass|json|ya?ml|toml|md|txt|rs|go|java|kt|kts|cs|php|rb|swift|sql|sh|ps1|bat|cmd|xml|c|h|cpp|hpp|cc|hh)$/i.test(p);
+}
+
+function makeFilePathsClickable(html) {
+  return html.replace(
+    /<code>([^<]{1,512})<\/code>/gi,
+    (full, inner) => {
+      const path = inner
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&amp;/g, "&")
+        .replace(/&quot;/g, '"')
+        .replace(/&#039;/g, "'");
+      if (!looksLikeFilePath(path)) return full;
+      const safe = escapeHtml(path);
+      return `<a class="file-path" href="#" data-path="${safe}">${safe}</a>`;
+    }
+  );
 }
 
 /* ─── #42 Terminal: command history navigation ────────────── */

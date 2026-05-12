@@ -22,8 +22,6 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-import httpx
-
 from config import (
     AGENT_MAX_STEPS, AGENT_DEFAULT_TIMEOUT, LLAMA_URL, SYSTEM_PROMPTS,
     REFLECTION_MAX_TOKENS, REFLECTION_TEMPERATURE, MAX_CONSECUTIVE_REJECTIONS,
@@ -50,9 +48,9 @@ class AgentPhase:
 class FileChangePlan:
     """Modification plan for a single file."""
     path: str
-    diff: str
-    old_content: str
-    new_content: str
+    diff: str = ""
+    old_content: str = ""
+    new_content: str = ""
     old_content_hash: str = ""
     user_approved: bool = False
     status: str = "pending"
@@ -360,12 +358,13 @@ Think step by step."""
         }
 
         try:
-            async with httpx.AsyncClient(timeout=self.config.timeout) as client:
-                response = await client.post(LLAMA_URL, json=payload)
-                response.raise_for_status()
-                result = response.json()
-                content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-                return content
+            from app import get_http_client
+            client = get_http_client()
+            response = await client.post(LLAMA_URL, json=payload)
+            response.raise_for_status()
+            result = response.json()
+            content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            return content
         except httpx.ConnectError:
             raise ConnectionError("Cannot connect to LLM service")
         except httpx.TimeoutException:
@@ -398,7 +397,7 @@ Think step by step."""
         """#19 Generate plan from LLM output."""
         plan_text = tools_output[-1] if tools_output else ""
 
-        # Try to parse plan JSON
+        # Strategy 1: ```plan ... ``` code block with JSON
         plan_pattern = r'```(?:plan|Plan)\s*\n([\s\S]*?)```'
         match = re.search(plan_pattern, plan_text)
         if match:
@@ -415,27 +414,99 @@ Think step by step."""
                         verification=file_data.get("verification", ""),
                     )
                     files.append(fcp)
-                return AgentPlan(
-                    description=plan_data.get("description", query),
-                    estimated_steps=len(files),
-                    files=files,
-                )
+                if files:
+                    return AgentPlan(
+                        description=plan_data.get("description", query),
+                        estimated_steps=len(files),
+                        files=files,
+                    )
             except json.JSONDecodeError:
                 pass
 
-        # Fallback: parse code blocks as file changes
+        # Strategy 2: Any JSON block with "files" and "description" keys
+        for json_match in re.finditer(r'```(?:json|JSON)?\s*\n([\s\S]*?)```', plan_text):
+            try:
+                data = json.loads(json_match.group(1))
+                if isinstance(data, dict) and "files" in data and isinstance(data["files"], list):
+                    files = []
+                    for file_data in data["files"]:
+                        if isinstance(file_data, dict) and "path" in file_data:
+                            fcp = FileChangePlan(
+                                path=file_data.get("path", ""),
+                                diff=file_data.get("diff", ""),
+                                old_content=file_data.get("old_content", ""),
+                                new_content=file_data.get("new_content", ""),
+                                dependencies=file_data.get("dependencies", []),
+                                verification=file_data.get("verification", ""),
+                            )
+                            files.append(fcp)
+                    if files:
+                        return AgentPlan(
+                            description=data.get("description", query),
+                            estimated_steps=len(files),
+                            files=files,
+                        )
+            except json.JSONDecodeError:
+                continue
+
+        # Strategy 3: Code blocks with file-path-like language tags (e.g. src/main.py)
         file_changes: list[FileChangePlan] = []
-        write_pattern = r'```(\S+\.+\S+)\n([\s\S]*?)```'
-        for match in re.finditer(write_pattern, plan_text):
-            path = match.group(1)
-            content = match.group(2).strip()
-            fcp = FileChangePlan(
-                path=path,
-                diff="(auto-generated diff)",
-                old_content="",
-                new_content=content,
-            )
-            file_changes.append(fcp)
+        path_pattern = r'```(\S+\.\w{1,10})\s*\n([\s\S]*?)```'
+        for match in re.finditer(path_pattern, plan_text):
+            lang = match.group(1)
+            # Heuristic: file path contains / or \\ or has a known extension
+            if '/' in lang or '\\' in lang or any(
+                lang.endswith(ext) for ext in ['.py', '.js', '.ts', '.jsx', '.tsx', '.go', '.rs',
+                                               '.java', '.cpp', '.c', '.h', '.html', '.css', '.scss',
+                                               '.json', '.yaml', '.yml', '.toml', '.md', '.sh', '.ps1',
+                                               '.sql', '.xml', '.rb', '.php', '.swift', '.kt', '.cs']
+            ):
+                content = match.group(2).strip()
+                if len(content) > 20:
+                    file_changes.append(FileChangePlan(
+                        path=lang,
+                        diff="(auto-generated diff)",
+                        old_content="",
+                        new_content=content,
+                    ))
+
+        # Strategy 4: Code blocks with known language tags, try to extract file path from surrounding text
+        if not file_changes:
+            known_langs = {'python', 'py', 'javascript', 'js', 'typescript', 'ts', 'jsx', 'tsx',
+                          'java', 'kotlin', 'go', 'rust', 'c', 'cpp', 'h', 'hpp', 'cs', 'ruby', 'rb',
+                          'php', 'swift', 'sql', 'sh', 'bash', 'powershell', 'ps1', 'html', 'css',
+                          'scss', 'json', 'yaml', 'yml', 'toml', 'xml', 'markdown', 'md'}
+            for match in re.finditer(r'```(\w+)\s*\n([\s\S]*?)```', plan_text):
+                lang = match.group(1).lower()
+                if lang not in known_langs:
+                    continue
+                code = match.group(2).strip()
+                if len(code) < 30:
+                    continue
+                # Look for file path before this code block
+                before = plan_text[:match.start()]
+                path = None
+                # Try to find path patterns: ### src/main.py, **File: path**, `path`, etc.
+                for pat in [
+                    r'(?:文件|路径|File|Path|file|path)\s*[：:]\s*`?([^\s`\n]+\.\w{1,10})`?',
+                    r'###?\s*`?([^\s`\n]+\.\w{1,10})`?',
+                    r'\*\*`?([^\s`*\n]+\.\w{1,10})`?\*\*',
+                    r'`([^\s`\n]+\.\w{1,10})`',
+                ]:
+                    m = re.search(pat, before, re.IGNORECASE)
+                    if m:
+                        path = m.group(1).strip().strip('`*#"\'')
+                        if '/' in path or '\\' in path or '.' in path:
+                            break
+                        else:
+                            path = None
+                if path:
+                    file_changes.append(FileChangePlan(
+                        path=path,
+                        diff="(auto-generated diff)",
+                        old_content="",
+                        new_content=code,
+                    ))
 
         if file_changes:
             return AgentPlan(
@@ -463,11 +534,16 @@ Think step by step."""
         from core.tools import ToolRegistry
 
         for fcp in ordered_files:
+            deps_met = True
             for dep in fcp.dependencies:
                 if dep not in applied_paths:
-                    results.append(f"SKIPPED: {fcp.path} -- dependency {dep} not applied")
-                    fcp.status = "skipped"
-                    continue
+                    deps_met = False
+                    break
+
+            if not deps_met:
+                results.append(f"SKIPPED: {fcp.path} -- dependency not met")
+                fcp.status = "skipped"
+                continue
 
             step = self.add_step(task_id, "apply_file", {"path": fcp.path})
             if not step:
@@ -483,7 +559,7 @@ Think step by step."""
                         results.append(f"VERIFICATION_FAILED: {fcp.path}")
                         fcp.status = "verification_failed"
                         applied_paths.discard(fcp.path)
-                        continue
+                        continue  # This continue is correct - inside a single if, not in a for loop
 
                 self.update_step(task_id, step.step_id, "success", output=f"Applied to {fcp.path}")
                 results.append(f"Applied: {fcp.path}")
@@ -567,11 +643,12 @@ Think step by step."""
         }
 
         try:
-            async with httpx.AsyncClient(timeout=self.config.timeout) as client:
-                response = await client.post(LLAMA_URL, json=payload)
-                response.raise_for_status()
-                result = response.json()
-                content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            from app import get_http_client
+            client = get_http_client()
+            response = await client.post(LLAMA_URL, json=payload)
+            response.raise_for_status()
+            result = response.json()
+            content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
         except Exception as e:
             logger.warning(f"[Reflection] Failed: {e}")
             return {"reflection": "Reflection failed", "approved": True, "risk_level": "low"}
@@ -614,18 +691,19 @@ Think step by step."""
         }
 
         try:
-            async with httpx.AsyncClient(timeout=self.config.timeout) as client:
-                response = await client.post(LLAMA_URL, json=payload)
-                response.raise_for_status()
-                result = response.json()
-                content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-                json_match = re.search(r'\{[^{}]*"analysis"[^{}]*\}', content, re.DOTALL)
-                if json_match:
-                    return json.loads(json_match.group())
+            from app import get_http_client
+            client = get_http_client()
+            response = await client.post(LLAMA_URL, json=payload)
+            response.raise_for_status()
+            result = response.json()
+            content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            json_match = _extract_json_block(content, 0)
+            if json_match:
+                return json_match
         except Exception as e:
             logger.warning(f"[Recovery] Failed to parse recovery: {e}")
 
-        return {"analysis": content[:200] if 'content' in dir() else str(e), "can_continue": False}
+        return {"analysis": content[:200] if content else str(e), "can_continue": False}
 
     async def summarize_step(self, tool_name: str, result: str, thought: str) -> dict:
         """#7 Compress tool execution result into short summary."""
@@ -646,14 +724,15 @@ Think step by step."""
         }
 
         try:
-            async with httpx.AsyncClient(timeout=self.config.timeout) as client:
-                response = await client.post(LLAMA_URL, json=payload)
-                response.raise_for_status()
-                result_data = response.json()
-                content = result_data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                json_match = re.search(r'\{[^{}]*"summary"[^{}]*\}', content, re.DOTALL)
-                if json_match:
-                    return json.loads(json_match.group())
+            from app import get_http_client
+            client = get_http_client()
+            response = await client.post(LLAMA_URL, json=payload)
+            response.raise_for_status()
+            result_data = response.json()
+            content = result_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            json_match = _extract_json_block(content, 0)
+            if json_match:
+                return json_match
         except Exception as e:
             logger.warning(f"[Summarize] Failed: {e}")
 

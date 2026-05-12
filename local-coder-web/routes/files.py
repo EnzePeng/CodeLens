@@ -17,31 +17,13 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
 
 from config import APP_DIR, IGNORE_DIRS, CODE_EXTS, MAX_FILE_BYTES, MAX_INDEX_FILES
-from models import state, HealthResponse, IndexStatsResponse
+from models import state, HealthResponse, IndexStatsResponse, FolderRequest, ReadFileRequest, BrowseRequest, CraftApplyRequest, ExecRequest
 from services.indexer import index_folder, build_tree, scan_repo
 from services.search import _search_cache
 
 router = APIRouter()
-
-
-class FolderRequest(BaseModel):
-    path: str
-
-
-class ReadFileRequest(BaseModel):
-    path: str
-
-
-class BrowseRequest(BaseModel):
-    path: str = ""
-
-
-class ExecRequest(BaseModel):
-    command: str
-    cwd: str = ""
 
 
 # ---- Helpers ----
@@ -180,6 +162,27 @@ def browse_dirs(req: BrowseRequest) -> dict:
     }
 
 
+@router.post("/api/craft-apply")
+def craft_apply(req: CraftApplyRequest) -> dict:
+    """BUG-04: Apply craft mode file changes."""
+    if state.root is None:
+        raise HTTPException(status_code=400, detail="Please set a folder first")
+
+    target = (state.root / req.file_path).resolve()
+    try:
+        target.relative_to(state.root.resolve())
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Path is outside the repository root")
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(req.content, encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Write failed: {exc}")
+
+    return {"status": "applied", "path": req.file_path}
+
+
 @router.post("/api/exec")
 def exec_command(req: ExecRequest) -> dict:
     """#73 Command execution with whitelist and safety checks."""
@@ -197,22 +200,29 @@ def exec_command(req: ExecRequest) -> dict:
         "python", "python3", "pip", "pip3",
         "node", "npm", "npx", "git",
         "dir", "type", "echo", "copy", "xcopy",
+        "cd", "chdir", "cls",
         "ls", "cat", "touch", "mkdir", "cp", "mv", "rm",
         "pytest", "nosetests", "go", "rustc", "cargo",
         "dotnet", "powershell", "pwsh",
     }
     if cmd_basename and cmd_basename not in allowed and not any(
-        cmd_basename == a or cmd_basename.startswith(a + " ") or a.startswith(cmd_basename + " ")
+        cmd_basename == a or cmd_basename.startswith(a + " ")
         for a in allowed
     ):
         raise HTTPException(status_code=403, detail=f"Command '{cmd_basename}' not allowed")
 
-    # Reject shell metacharacters
+    # Reject shell metacharacters (allow Windows paths: \, : for drive letters)
     import re
-    if not re.match(r'^[\w./ -]+$', req.command.strip()):
+    if not re.match(r"^[A-Za-z0-9_./\\: \-]+$", req.command.strip()):
         raise HTTPException(status_code=403, detail="Command contains disallowed characters")
 
-    cwd = req.cwd if req.cwd else str(APP_DIR)
+    # Default cwd: open repo root when indexed so `dir` / `pytest` work without manual `cd`
+    if req.cwd and str(req.cwd).strip():
+        cwd = str(Path(req.cwd).expanduser().resolve())
+    elif state.root is not None:
+        cwd = str(state.root.resolve())
+    else:
+        cwd = str(APP_DIR)
 
     try:
         result = subprocess.run(

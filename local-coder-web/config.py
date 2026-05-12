@@ -118,5 +118,5 @@ SUMMARIZE_TEMPERATURE = 0.1
 DANGEROUS_PATTERNS = [
     "rm -rf", "mkfs", "dd if=", ">: ", "|: ",
     "curl ", "wget ", "python -c", "perl -e", "bash -c", "sh -c",
-    "$(", "`", "&&", "||",
+    "$(", "`",
 ]

@@ -70,9 +70,18 @@ def start_file_watcher_if_available(root: Path):
 
         def on_change(changes):
             logger.info(f"[FileWatcher] {len(changes)} file changes detected, triggering reindex...")
-            # Debounce: reindex is triggered by the route, not automatically
-            # to avoid excessive reindexing
-            pass
+            from services.indexer import index_folder
+            from models import state
+            if state.root and state.root.exists():
+                result = index_folder(state.root)
+                state.files = result["files"]
+                state.tree = result["tree"]
+                state.idf = result["idf"]
+                state.avg_dl = result["avg_dl"]
+                state.dep_graph = result.get("dep_graph")
+                from services.search import _search_cache
+                _search_cache.clear()
+                logger.info(f"[FileWatcher] Reindex complete: {result['file_count']} files")
 
         global _file_watcher_ref
         _file_watcher_ref = start_file_watcher(root, on_change)

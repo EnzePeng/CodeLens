@@ -182,11 +182,13 @@ class ContextManager:
         if not text:
             return 0
         import re
-        cjk = len(re.findall(r"[一-鿿]", text))
-        non_cjk = len(text) - cjk
+        # CJK characters: roughly 1.5 tokens per char
+        cjk = len(re.findall(r"[一-鿿㐀-䶿豈-﫿]", text))
+        # English words: roughly 1.3 tokens per word
         english = len(re.findall(r"[A-Za-z0-9_]+", text))
-        other = non_cjk - english
-        return int(cjk * 0.75 + english * 1.25 + other * 0.2)
+        non_cjk_english = english + len(re.findall(r"[A-Za-z0-9_]+", text[cjk:]))
+        other = max(0, len(text) - cjk - english)
+        return int(cjk * 1.5 + english * 1.3 + other * 0.5)
 
 
 # Global context manager

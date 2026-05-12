@@ -325,13 +325,14 @@ class SearchCache:
         return None
 
     def set(self, query: str, file_count: int, result: list[CodeFile]) -> None:
+        import time
         key = self._fingerprint(query, file_count)
         if key in self._cache:
             del self._cache[key]
         while len(self._cache) >= self._max_size:
-            oldest = min(self._cache, key=lambda k: self._cache[k][2])
+            oldest = min(self._cache, key=lambda k: self._cache[k][1])
             del self._cache[oldest]
-        self._cache[key] = (result, 0, 0)
+        self._cache[key] = (result, time.time(), 0)
 
     def clear(self) -> None:
         self._cache.clear()
@@ -389,21 +390,23 @@ def select_context(
         if not hasattr(f, 'tokens_list') or not f.tokens_list:
             f.tokens_list = _tokenize_doc(f"{f.rel} {' '.join(f.symbols)} {f.text[:8000]}")
 
-        score = bm25_score(query_terms, f, avg_dl, idf)
+        # Use expanded terms for BM25 scoring
+        all_terms = expanded_terms
+        score = bm25_score(all_terms, f, avg_dl, idf)
 
         # #2 Path depth boost
         depth = f.rel.count('/')
-        score += _calc_path_boost(query_terms, f.rel, depth)
+        score += _calc_path_boost(all_terms, f.rel, depth)
 
         # #3 Symbol relevance boost
-        sym_b = _calc_symbol_boost(query_terms, f.symbols)
+        sym_b = _calc_symbol_boost(all_terms, f.symbols)
         score += sym_b
 
         # #4 Phrase matching
-        score += _calc_phrase_boost(query_terms, f)
+        score += _calc_phrase_boost(all_terms, f)
 
         # #5 Prefix matching
-        score += _calc_prefix_match(query_terms, f)
+        score += _calc_prefix_match(all_terms, f)
 
         # #7 Dependency graph boost
         if dep_graph:
@@ -483,10 +486,10 @@ def search_files(
 
     scored: list[tuple[float, CodeFile]] = []
     for f in files:
-        score = bm25_score(query_terms, f, avg_dl, idf)
+        score = bm25_score(expanded_terms, f, avg_dl, idf)
         depth = f.rel.count('/')
-        score += _calc_path_boost(query_terms, f.rel, depth)
-        score += _calc_symbol_boost(query_terms, f.symbols)
+        score += _calc_path_boost(expanded_terms, f.rel, depth)
+        score += _calc_symbol_boost(expanded_terms, f.symbols)
         if dep_graph:
             score += dep_graph.get_referent_boost(f.rel, expanded_terms)
         if score > 0:

@@ -40,7 +40,13 @@ class Tool(ABC):
     """Base class for all Agent tools."""
     name: str = ""
     description: str = ""
-    parameters: dict[str, Any] = field(default_factory=dict)
+    parameters: dict[str, Any] = {}
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        # Ensure each subclass gets its own parameters dict
+        if "parameters" not in cls.__dict__:
+            cls.parameters = {}
 
     @abstractmethod
     def execute(self, **kwargs) -> str:

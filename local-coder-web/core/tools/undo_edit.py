@@ -21,18 +21,25 @@ class UndoManager:
     def __init__(self, max_history: int = 50):
         self.max_history = max_history
         self._history: list[dict] = []
+        self._redo_stack: list[dict] = []
         self._load_history()
 
     def _load_history(self) -> None:
         if _BACKUP_FILE.exists():
             try:
-                self._history = json.loads(_BACKUP_FILE.read_text(encoding="utf-8"))
+                data = json.loads(_BACKUP_FILE.read_text(encoding="utf-8"))
+                self._history = data.get("history", [])
+                self._redo_stack = data.get("redo_stack", [])
             except Exception:
                 self._history = []
+                self._redo_stack = []
 
     def _save_history(self) -> None:
         _BACKUP_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _BACKUP_FILE.write_text(json.dumps(self._history, ensure_ascii=False, indent=2), encoding="utf-8")
+        _BACKUP_FILE.write_text(
+            json.dumps({"history": self._history, "redo_stack": self._redo_stack}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
     def record_edit(self, path: str, old_content: str, new_content: str, tool: str) -> None:
         record = {
@@ -53,6 +60,7 @@ class UndoManager:
             if not self._history:
                 break
             record = self._history.pop()
+            self._redo_stack.append(record)
             if state.root is None:
                 results.append({"success": False, "error": "No repository set", "path": record["path"]})
                 continue
@@ -61,12 +69,16 @@ class UndoManager:
                 target.relative_to(state.root.resolve())
             except ValueError:
                 results.append({"success": False, "error": "Path outside repo", "path": record["path"]})
+                self._redo_stack.pop()  # remove the one we just added
                 continue
             if not target.exists():
                 results.append({"success": False, "error": "File not found", "path": record["path"]})
+                self._redo_stack.pop()  # remove the one we just added
                 continue
             try:
                 current = target.read_text(encoding="utf-8", errors="replace")
+                # Store current content so redo can restore it
+                record_with_current = {**record, "_current_content": current}
                 backup_path = Path.home() / ".local-coder-web" / "backups" / f"{record['path'].replace('/', '_')}_{int(record['timestamp'])}.bak"
                 backup_path.parent.mkdir(parents=True, exist_ok=True)
                 backup_path.write_text(current, encoding="utf-8")
@@ -74,16 +86,17 @@ class UndoManager:
                 results.append({"success": True, "path": record["path"], "action": "undo"})
             except Exception as e:
                 results.append({"success": False, "error": str(e), "path": record["path"]})
+                self._redo_stack.pop()  # remove the one we just added
         self._save_history()
         return results
 
     def redo(self, count: int = 1) -> list[dict]:
-        """Redo the last N undone edits (restore from backups)."""
+        """Redo the last N undone edits (restore to new_content after undo)."""
         results = []
-        for _ in range(min(count, len(self._history))):
-            if not self._history:
+        for _ in range(min(count, len(self._redo_stack))):
+            if not self._redo_stack:
                 break
-            record = self._history.pop()
+            record = self._redo_stack.pop(0)
             if state.root is None:
                 results.append({"success": False, "error": "No repository set", "path": record["path"]})
                 continue
@@ -94,6 +107,7 @@ class UndoManager:
                 results.append({"success": False, "error": "Path outside repo", "path": record["path"]})
                 continue
             try:
+                # Restore the new_content from the original edit
                 target.write_text(record["new_content"], encoding="utf-8")
                 results.append({"success": True, "path": record["path"], "action": "redo"})
             except Exception as e:

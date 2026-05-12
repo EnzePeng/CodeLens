@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 from dataclasses import dataclass, field
-from threading import Thread, Event
+from threading import Thread, Event, Lock
 
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
@@ -113,7 +113,7 @@ class FileWatcher:
         self._changes: list[FileChange] = []
         self._batch_thread: Optional[Thread] = None
         self._stop_event = Event()
-        self._lock = Event()
+        self._lock = Lock()
     
     def start(self) -> None:
         """Start watching the directory."""

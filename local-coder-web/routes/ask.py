@@ -1,70 +1,183 @@
 # local-coder-web/routes/ask.py
-# 完整文件内容，仅修改了超时时间参数
+# Fixed: BUG-01 (client undefined), BUG-02 (JSON body parsing),
+# BUG-03 (context search integration), BUG-19 (SSE format)
 
 import asyncio
 import json
 import logging
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from typing import AsyncIterator
+
+from models import AskRequest
+from services.search import select_context, render_context
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 LLAMA_URL = "http://127.0.0.1:8080/v1/chat/completions"
 
-# 默认配置
+# Default configuration
 DEFAULT_MAX_TOKENS = 4096
 DEFAULT_TEMPERATURE = 0.15
-DEFAULT_TIMEOUT = 600  # 增加到 600 秒
+DEFAULT_TIMEOUT = 600  # Increased to 600 seconds
+
+
+def _sse(data: dict) -> str:
+    """Format data as SSE event."""
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
 
 async def _stream_llama(
     query: str,
+    context_info: list[dict],
     max_tokens: int = DEFAULT_MAX_TOKENS,
     temperature: float = DEFAULT_TEMPERATURE,
 ) -> AsyncIterator[str]:
     """
-    流式调用 LLM，返回字符级流式响应。
-    
-    Args:
-        query: 用户查询
-        max_tokens: 最大 token 数
-        temperature: 温度参数
-        
-    Yields:
-        每个字符的响应
+    Stream LLM response in SSE format matching frontend expectations:
+      - sources event with referenced file info
+      - delta events with content chunks
+      - done event with accumulated answer at end
     """
+    # Yield context/sources event first
+    if context_info:
+        yield _sse({"type": "sources", "sources": context_info})
+
     payload = {
         "model": "qwen3.5-9b",
         "messages": [
-            {"role": "system", "content": "你是一个专业的代码助手。"},
+            {"role": "system", "content": "You are a professional code assistant."},
             {"role": "user", "content": query}
         ],
         "max_tokens": max_tokens,
         "temperature": temperature,
         "stream": True,
     }
-    
+
     try:
+        from app import get_http_client
+        client = get_http_client()
+        all_content = []
         async with client.stream("POST", LLAMA_URL, json=payload) as response:
-            # 增加超时时间到 600 秒
             async with asyncio.timeout(DEFAULT_TIMEOUT):
+                sse_tail = ""
                 async for chunk in response.aiter_text(chunk_size=4096):
-                    if chunk:
-                        yield chunk
+                    if not chunk:
+                        continue
+                    # Buffer across chunks: never strip the whole chunk (breaks mid-line SSE).
+                    sse_tail += chunk.replace("\r\n", "\n")
+                    while "\n" in sse_tail:
+                        line, sse_tail = sse_tail.split("\n", 1)
+                        line = line.strip()
+                        if not line.startswith("data: "):
+                            continue
+                        line = line[6:]
+                        if line == "[DONE]":
+                            break
+
+                        try:
+                            data = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+
+                        choices = data.get("choices", [])
+                        if not choices:
+                            continue
+
+                        delta = choices[0].get("delta", {})
+                        content = delta.get("content", "")
+                        finish_reason = choices[0].get("finish_reason")
+
+                        if content:
+                            all_content.append(content)
+                            yield _sse({"type": "delta", "content": content})
+
+                        if finish_reason is not None:
+                            answer = "".join(all_content)
+                            yield _sse({"type": "done", "answer": answer, "finish_reason": finish_reason})
+                            return
+
     except asyncio.TimeoutError:
-        logger.error(f"LLM 请求超时：{DEFAULT_TIMEOUT}秒")
-        raise HTTPException(status_code=504, detail="LLM 请求超时")
+        logger.error(f"LLM request timeout: {DEFAULT_TIMEOUT}s")
+        yield _sse({"type": "error", "message": f"LLM request timeout ({DEFAULT_TIMEOUT}s)"})
     except Exception as e:
-        logger.error(f"LLM 请求失败：{e}")
-        raise HTTPException(status_code=502, detail=str(e))
+        logger.error(f"LLM request failed: {e}")
+        yield _sse({"type": "error", "message": str(e)})
+
 
 @router.post("/api/ask")
-async def ask(query: str, max_tokens: int = DEFAULT_MAX_TOKENS, temperature: float = DEFAULT_TEMPERATURE):
+async def ask(req: AskRequest):
     """
-    问答模式：用户提问，LLM 回答。
+    Ask mode: user asks a question, LLM answers with code context.
     """
+    from models import state
+    from services.indexer import build_bm25_index
+    import app as _app_module
+
+    question = req.question
+    max_tokens = req.max_tokens if req.max_tokens is not None else DEFAULT_MAX_TOKENS
+    temperature = req.temperature if req.temperature is not None else DEFAULT_TEMPERATURE
+
+    # BUG-03: Build context from codebase
+    context_chunks = []
+    context_sources = []
+    if state.root and state.files and state.idf:
+        idf, avg_dl, _ = build_bm25_index(state.files)
+        ort_sess, ort_tok = _app_module.get_onnx_session()
+
+        # Build history context
+        history_str = ""
+        if req.history:
+            history_str = "\n".join(
+                f"{h.get('role', 'user')}: {h.get('content', '')}"
+                for h in req.history[-10:]
+            )
+
+        context_question = question
+        if history_str:
+            context_question = f"{history_str}\n\nCurrent question: {question}"
+
+        selected = select_context(
+            question=context_question,
+            files=state.files,
+            idf=idf,
+            avg_dl=avg_dl,
+            embedding_ready=state.embedding_ready,
+            session=ort_sess,
+            tokenizer=ort_tok,
+            context_limit=req.context_limit,
+            dep_graph=state.dep_graph,
+        )
+        context = render_context(selected)
+        if context:
+            context_chunks.append(f"Code context:\n{context}")
+            # Build sources info for frontend
+            for cf in selected[:10]:
+                context_sources.append({
+                    "path": cf.rel,
+                    "size": cf.size,
+                })
+
+    if req.mode == "craft" and req.file_path and req.new_content:
+        context_chunks.append(f"Craft mode - file: {req.file_path}\nContent: {req.new_content[:2000]}")
+
+    context_str = "\n\n".join(context_chunks)
+    if context_str:
+        full_query = f"{context_str}\n\nUser question: {question}"
+    else:
+        full_query = question
+
+    # If craft mode, apply the file change first
+    if req.mode == "craft" and req.file_path and req.new_content:
+        try:
+            from core.tools import ToolRegistry
+            ToolRegistry.execute("write_file", path=req.file_path, content=req.new_content)
+        except Exception as e:
+            logger.warning(f"Craft apply failed: {e}")
+
     return StreamingResponse(
-        _stream_llama(query, max_tokens, temperature),
-        media_type="text/event-stream"
+        _stream_llama(full_query, context_sources, max_tokens, temperature),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

@@ -1400,11 +1400,25 @@ button.primary-btn:disabled, #setFolderBtn:disabled { cursor: not-allowed; backg
   border-bottom: 1px solid var(--line);
   min-height: 36px;
   flex-shrink: 0;
+  position: relative;
+  z-index: 1;
 }
 
 [data-theme="dark"] .tab-bar {
   background: #252526;
   border-bottom-color: #3c3c3c;
+}
+
+/* Keep tab bar above fullscreen editor */
+.tab-bar.editor-fullscreen-visible {
+  position: sticky;
+  top: 0;
+  z-index: 600;
+  background: #f3f3f3;
+}
+
+[data-theme="dark"] .tab-bar.editor-fullscreen-visible {
+  background: #252526;
 }
 
 .tab-list {
@@ -1525,6 +1539,31 @@ button.primary-btn:disabled, #setFolderBtn:disabled { cursor: not-allowed; backg
   overflow: hidden;
   background: var(--code-bg);
   border-bottom: 1px solid var(--line);
+}
+
+.editor-area.collapsed {
+  display: none;
+}
+
+.editor-area.collapsed + .messages {
+  max-height: none;
+  flex: 1;
+}
+
+/* Editor fullscreen mode */
+.editor-area.fullscreen {
+  position: fixed;
+  top: 0;
+  left: 280px;  /* sidebar width */
+  right: 0;
+  bottom: 0;
+  z-index: 500;
+  min-height: auto;
+  border-bottom: none;
+}
+
+.editor-area.fullscreen .editor-container {
+  height: 100%;
 }
 
 [data-theme="dark"] .editor-area {
@@ -1723,7 +1762,7 @@ button.primary-btn:disabled, #setFolderBtn:disabled { cursor: not-allowed; backg
   bottom: 80px;
   left: 10px;
   right: 10px;
-  max-height: 300px;
+  max-height: 400px;
   background: var(--agent-bg);
   border: 1px solid var(--agent-border);
   border-radius: 8px;
@@ -1731,9 +1770,67 @@ button.primary-btn:disabled, #setFolderBtn:disabled { cursor: not-allowed; backg
   display: flex;
   flex-direction: column;
   z-index: 100;
+  transition: max-height 0.3s ease, bottom 0.3s ease;
 }
 
 .agent-panel.hidden { display: none; }
+
+/* Preview phase: expand panel for approval UI */
+.agent-panel.preview-phase {
+  max-height: 72vh;
+  bottom: 80px;
+}
+
+/* Fullscreen mode */
+.agent-panel.fullscreen {
+  position: fixed;
+  top: 0;
+  left: 280px;
+  right: 0;
+  bottom: 0;
+  max-height: none;
+  border-radius: 0;
+  z-index: 500;
+}
+
+/* ─── Agent body (split layout container) ─── */
+.agent-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.agent-left-col {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.agent-right-col {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex: 1;
+}
+
+/* Fullscreen: side-by-side layout */
+.agent-panel.fullscreen .agent-body {
+  flex-direction: row;
+  gap: 4px;
+}
+
+.agent-panel.fullscreen .agent-left-col {
+  width: 45%;
+  min-width: 380px;
+  border-right: 2px solid var(--agent-border);
+}
+
+.agent-panel.fullscreen .agent-right-col {
+  flex: 1;
+  min-width: 300px;
+}
 
 .agent-header {
   display: flex;
@@ -1774,6 +1871,10 @@ button.primary-btn:disabled, #setFolderBtn:disabled { cursor: not-allowed; backg
   overflow-y: auto;
   padding: 10px;
   border-bottom: 1px solid var(--agent-border);
+}
+
+.agent-panel.fullscreen .agent-timeline {
+  max-height: 180px;
 }
 
 .agent-step {
@@ -1886,6 +1987,11 @@ button.primary-btn:disabled, #setFolderBtn:disabled { cursor: not-allowed; backg
   font-size: 14px;
 }
 
+.agent-panel.fullscreen .agent-phase-bar {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 /* ─── Agent Thinking ───────────────────────────────────────────── */
 .agent-thinking {
   padding: 12px;
@@ -1912,97 +2018,132 @@ button.primary-btn:disabled, #setFolderBtn:disabled { cursor: not-allowed; backg
 /* ─── Agent Diff Preview ───────────────────────────────────────── */
 .agent-preview {
   border-bottom: 1px solid var(--agent-border);
+  display: flex;
+  flex-direction: column;
+}
+
+.agent-panel.fullscreen .agent-preview {
+  flex: 1;
+  border-bottom: none;
 }
 
 .preview-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 12px;
+  padding: 12px 16px;
   background: var(--agent-header);
-  font-size: 13px;
+  font-size: 14px;
+  font-weight: 700;
+  border-bottom: 2px solid var(--accent);
+  flex-shrink: 0;
 }
 
 .preview-count {
-  font-size: 11px;
-  color: var(--muted);
-  font-weight: 400;
+  font-size: 12px;
+  color: var(--accent-dark);
+  font-weight: 600;
+  background: var(--soft);
+  padding: 2px 10px;
+  border-radius: 12px;
 }
 
 .preview-files {
-  max-height: 200px;
+  flex: 1;
   overflow-y: auto;
-  padding: 8px 12px;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .preview-file {
-  border: 1px solid var(--agent-border);
-  border-radius: 6px;
-  margin-bottom: 8px;
+  border: 2px solid var(--agent-border);
+  border-radius: 8px;
   overflow: hidden;
+  background: var(--panel);
+  transition: border-color 0.2s;
+}
+
+.preview-file:hover {
+  border-color: var(--accent);
 }
 
 .preview-file-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
-  background: var(--panel);
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--bg);
   border-bottom: 1px solid var(--agent-border);
+  flex-wrap: wrap;
 }
 
 .preview-path {
   font-family: "Cascadia Code", Consolas, monospace;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 700;
   color: var(--code);
+  flex: 1;
+  min-width: 120px;
 }
 
 .preview-stats {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  margin-right: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-family: monospace;
 }
 
-.preview-stats.added { color: var(--agent-success); }
-.preview-stats.removed { color: var(--agent-failed); }
+.preview-stats.added {
+  color: var(--agent-success);
+  background: rgba(40,167,69,0.1);
+}
+.preview-stats.removed {
+  color: var(--agent-failed);
+  background: rgba(220,53,69,0.1);
+}
 
 .preview-actions {
   display: flex;
-  gap: 4px;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 .preview-approve,
-.preview-reject,
-.preview-edit {
+.preview-reject {
   border: 0;
-  border-radius: 4px;
-  padding: 4px 8px;
-  font-size: 12px;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 700;
   cursor: pointer;
   transition: all 0.15s;
+  white-space: nowrap;
 }
 
 .preview-approve {
-  background: var(--soft);
-  color: var(--accent-dark);
-  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
 }
 
 .preview-approve:hover {
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent-dark);
+  transform: scale(1.03);
 }
 
 .preview-approve.approved {
-  background: var(--accent);
-  color: #fff;
+  background: var(--agent-success);
+  cursor: default;
+  transform: none;
 }
 
 .preview-reject {
-  background: #fde8e8;
+  background: #fff;
   color: var(--agent-failed);
-  border: 1px solid var(--agent-failed);
+  border: 2px solid var(--agent-failed);
 }
 
 .preview-reject:hover {
@@ -2013,47 +2154,36 @@ button.primary-btn:disabled, #setFolderBtn:disabled { cursor: not-allowed; backg
 .preview-reject.rejected {
   background: var(--agent-failed);
   color: #fff;
+  cursor: default;
 }
 
-.preview-diff {
-  padding: 8px 12px;
+.preview-content {
+  padding: 10px 14px;
   background: var(--code-bg);
   color: #d4d4d4;
   font-family: "Cascadia Code", Consolas, monospace;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
-  max-height: 150px;
+  max-height: 220px;
   overflow: auto;
   white-space: pre;
 }
 
-.preview-diff .diff-added {
-  background: rgba(46, 160, 79, 0.15);
-  color: #3fb950;
-}
-
-.preview-diff .diff-removed {
-  background: rgba(248, 81, 73, 0.15);
-  color: #f85149;
-}
-
-.preview-diff .diff-context {
-  color: #8b949e;
-}
-
 .preview-actions-global {
   display: flex;
-  gap: 8px;
-  padding: 8px 12px;
-  justify-content: flex-end;
-  border-top: 1px solid var(--agent-border);
+  gap: 10px;
+  padding: 12px 16px;
+  justify-content: center;
+  border-top: 2px solid var(--agent-border);
+  background: var(--bg);
+  flex-shrink: 0;
 }
 
 .preview-global-btn {
   border: 0;
-  border-radius: 6px;
-  padding: 6px 16px;
-  font-size: 12px;
+  border-radius: 8px;
+  padding: 10px 24px;
+  font-size: 14px;
   font-weight: 700;
   cursor: pointer;
   transition: all 0.15s;
@@ -2066,12 +2196,13 @@ button.primary-btn:disabled, #setFolderBtn:disabled { cursor: not-allowed; backg
 
 .preview-global-btn.approve:hover {
   background: var(--accent-dark);
+  transform: scale(1.03);
 }
 
 .preview-global-btn.reject {
-  background: #fde8e8;
+  background: #fff;
   color: var(--agent-failed);
-  border: 1px solid var(--agent-failed);
+  border: 2px solid var(--agent-failed);
 }
 
 .preview-global-btn.reject:hover {
@@ -2083,6 +2214,12 @@ button.primary-btn:disabled, #setFolderBtn:disabled { cursor: not-allowed; backg
 .agent-applying {
   padding: 12px;
   border-bottom: 1px solid var(--agent-border);
+}
+
+.agent-panel.fullscreen .agent-applying {
+  flex: 1;
+  overflow-y: auto;
+  border-bottom: none;
 }
 
 .apply-progress {

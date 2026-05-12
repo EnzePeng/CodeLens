@@ -48,13 +48,6 @@ def _file_hash(path: Path) -> str:
         return ""
 
 
-def _content_hash(path: Path) -> str:
-    """Full content hash for accuracy."""
-    try:
-        return hashlib.md5(path.read_bytes()).hexdigest()
-    except OSError:
-        return ""
-
 
 # ---- Index cache persistence (#47) ----
 
@@ -268,16 +261,27 @@ def _incremental_update(
 
     old_file_hashes = old_cache.get("file_hashes", {})
 
-    # Detect structural changes
+    # Detect structural changes - BUG-11: filter IGNORE_DIRS like scan_repo does
     old_dirs = set(old_cache.get("dirs", []))
     current_dirs: set[str] = set()
     for current, dirnames, _ in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and not d.startswith(".")]
         current_dirs.add(current)
 
     if old_dirs != current_dirs:
         needs_full_reindex = True
 
-    # Re-read changed files
+    # BUG-12: Detect new and deleted files
+    current_file_set = {f.rel for f in files}
+    old_file_set = set(old_file_hashes.keys())
+
+    new_files_rel = current_file_set - old_file_set
+    deleted_files_rel = old_file_set - current_file_set
+
+    if new_files_rel or deleted_files_rel:
+        needs_full_reindex = True
+
+    # Re-read changed files (existing files only)
     for f in files:
         new_hash = _file_hash(f.path)
         old_hash = old_file_hashes.get(f.rel, "")

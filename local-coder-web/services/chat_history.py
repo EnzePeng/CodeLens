@@ -40,8 +40,8 @@ class ChatHistory:
         """Trim oldest non-system messages if over limits."""
         # Trim by char count
         while self._total_chars > self.max_chars and len(self.messages) > 1:
-            # Find last non-system message
-            for i in range(len(self.messages) - 1, -1, -1):
+            # Find FIRST non-system message (oldest, after system)
+            for i in range(1, len(self.messages)):
                 if self.messages[i].role != "system":
                     self._total_chars -= len(self.messages[i].content)
                     del self.messages[i]
@@ -49,7 +49,7 @@ class ChatHistory:
 
         # Trim by message count
         while len(self.messages) > self.max_messages + 1:  # +1 for system
-            for i in range(len(self.messages) - 1, -1, -1):
+            for i in range(1, len(self.messages)):
                 if self.messages[i].role != "system":
                     del self.messages[i]
                     break

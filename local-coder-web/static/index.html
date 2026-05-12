@@ -171,9 +171,11 @@
             </div>
             <div class="tab-actions">
               <button id="newFileTabBtn" type="button" class="tab-action-btn" title="新建文件">+</button>
+              <button id="editorFullscreenBtn" type="button" class="tab-action-btn" title="编辑器全屏">⛶</button>
+              <button id="editorCloseBtn" type="button" class="tab-action-btn" title="关闭编辑器">✕</button>
             </div>
           </div>
-          
+
           <!-- Editor area (CodeMirror) -->
           <div id="editorArea" class="editor-area">
             <div id="editorContainer" class="editor-container">
@@ -221,6 +223,7 @@
               <div class="agent-controls">
                 <button id="agentPauseBtn" type="button" class="agent-btn" title="暂停">⏸️</button>
                 <button id="agentStopBtn" type="button" class="agent-btn" title="停止">⏹️</button>
+                <button id="agentFullscreenBtn" type="button" class="agent-btn" title="全屏">⛶</button>
                 <button id="closeAgentBtn" type="button" class="agent-btn" title="关闭">✕</button>
               </div>
             </div>
@@ -254,28 +257,35 @@
               <div class="thinking-content" id="thinkingContent"></div>
             </div>
 
-            <!-- Phase-specific content: diff preview -->
-            <div id="agentPreview" class="agent-preview hidden">
-              <div class="preview-header">
-                <strong>📝 修改预览 — 逐项确认</strong>
-                <span id="previewCount" class="preview-count"></span>
+            <!-- Split body: left column (preview/apply) + right column (timeline/output) -->
+            <div class="agent-body">
+              <div class="agent-left-col">
+                <!-- Phase-specific content: diff preview -->
+                <div id="agentPreview" class="agent-preview hidden">
+                  <div class="preview-header">
+                    <strong>📝 修改预览 — 逐项确认</strong>
+                    <span id="previewCount" class="preview-count"></span>
+                  </div>
+                  <div id="previewFiles" class="preview-files"></div>
+                  <div class="preview-actions-global">
+                    <button id="previewApproveAllBtn" type="button" class="preview-global-btn approve">全部批准</button>
+                    <button id="previewRejectAllBtn" type="button" class="preview-global-btn reject">全部拒绝</button>
+                  </div>
+                </div>
+
+                <!-- Phase-specific content: apply progress -->
+                <div id="agentApplying" class="agent-applying hidden">
+                  <div class="apply-progress">
+                    <div id="applySteps" class="apply-steps"></div>
+                  </div>
+                </div>
               </div>
-              <div id="previewFiles" class="preview-files"></div>
-              <div class="preview-actions-global">
-                <button id="previewApproveAllBtn" type="button" class="preview-global-btn approve">全部批准</button>
-                <button id="previewRejectAllBtn" type="button" class="preview-global-btn reject">全部拒绝</button>
+
+              <div class="agent-right-col">
+                <div id="agentTimeline" class="agent-timeline"></div>
+                <div id="agentOutput" class="agent-output"></div>
               </div>
             </div>
-
-            <!-- Phase-specific content: apply progress -->
-            <div id="agentApplying" class="agent-applying hidden">
-              <div class="apply-progress">
-                <div id="applySteps" class="apply-steps"></div>
-              </div>
-            </div>
-
-            <div id="agentTimeline" class="agent-timeline"></div>
-            <div id="agentOutput" class="agent-output"></div>
           </div>
         </div>
 
@@ -330,6 +340,6 @@
       </div>
     </div>
 
-    <script src="/static/app.js?v=20260510"></script>
+    <script src="/static/app.js?v=20260512b"></script>
   </body>
 </html>
