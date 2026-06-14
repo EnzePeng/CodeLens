@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CodeLens - AI代码助手</title>
+    <link rel="stylesheet" href="/static/styles.css?v=100" />
+    <!-- highlight.js for syntax highlighting -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <!-- xterm.js for terminal -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+    <!-- CodeMirror for code editing -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/theme/material-darker.css" />
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/python/python.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/javascript/javascript.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/xml/xml.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/css/css.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/htmlmixed/htmlmixed.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/markdown/markdown.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/go/go.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/rust/rust.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/sql/sql.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/shell/shell.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  </head>
+  <body>
+    <main class="shell">
+      <!-- Sidebar -->
+      <section class="sidebar">
+        <div class="sidebar-resize" id="sidebarResize"></div>
+        <div class="brand">
+          <div class="logo">
+            <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+              <rect width="32" height="32" rx="8" fill="url(#logo-gradient)"/>
+              <path d="M10 12L16 18L22 12" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M16 20V24" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+              <defs>
+                <linearGradient id="logo-gradient" x1="0" y1="0" x2="32" y2="32">
+                  <stop stop-color="#6366f1"/>
+                  <stop offset="1" stop-color="#8b5cf6"/>
+                </linearGradient>
+              </defs>
+            </svg>
+          </div>
+          <div class="brand-text">
+            <h1>CodeLens</h1>
+            <p>AI代码助手</p>
+          </div>
+          <button id="themeToggle" type="button" class="theme-toggle" title="切换主题">
+            <svg class="sun-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+            </svg>
+            <svg class="moon-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+            </svg>
+          </button>
+        </div>
+
+        <!-- Folder selector -->
+        <div class="folder-section">
+          <label class="field">
+            <span class="field-label">代码文件夹</span>
+            <div class="folder-input-row">
+              <input id="folderInput" spellcheck="false" placeholder="选择代码文件夹..." readonly />
+              <button id="browseBtn" type="button" class="browse-btn" title="浏览目录">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                </svg>
+              </button>
+            </div>
+          </label>
+          <button id="setFolderBtn" type="button" class="primary-btn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+            </svg>
+            加载代码库
+          </button>
+        </div>
+
+        <!-- Stats -->
+        <div class="stats-card">
+          <div class="stat-item">
+            <span class="stat-label">当前目录</span>
+            <strong id="folderStatus" class="stat-value">未设置</strong>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">已索引文件</span>
+            <strong id="fileCount" class="stat-value">0</strong>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">搜索模式</span>
+            <strong id="embeddingMode" class="stat-value">—</strong>
+          </div>
+        </div>
+
+        <!-- Settings panel (collapsible) -->
+        <div class="settings-panel">
+          <button id="settingsToggle" type="button" class="settings-toggle">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+            <span>模型参数</span>
+            <svg class="settings-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M9 18l6-6-6-6"/>
+            </svg>
+          </button>
+          <div id="settingsContent" class="settings-content collapsed">
+            <div class="settings-grid">
+              <div class="setting-item">
+                <label>上下文窗口 <span class="setting-hint" title="模型单次生成的最大token数，影响回复长度">?</span></label>
+                <select id="maxTokensSelect" class="setting-select">
+                  <option value="1024">1,024</option>
+                  <option value="2048">2,048</option>
+                  <option value="4096" selected>4,096</option>
+                  <option value="8192">8,192</option>
+                  <option value="16384">16,384</option>
+                </select>
+              </div>
+              <div class="setting-item">
+                <label>Temperature <span class="setting-hint" title="控制输出随机性：越低越精确，越高越有创意">?</span></label>
+                <select id="temperatureSelect" class="setting-select">
+                  <option value="0.1">0.1 (精确)</option>
+                  <option value="0.15" selected>0.15 (平衡)</option>
+                  <option value="0.25">0.25 (创意)</option>
+                  <option value="0.4">0.4 (发散)</option>
+                </select>
+              </div>
+              <div class="setting-item">
+                <label>上下文上限 <span class="setting-hint" title="发送给模型的代码上下文最大字符数">?</span></label>
+                <select id="contextLimitSelect" class="setting-select">
+                  <option value="10000">10,000</option>
+                  <option value="15000" selected>15,000</option>
+                  <option value="21000">21,000</option>
+                  <option value="32000">32,000</option>
+                </select>
+              </div>
+            </div>
+            <div class="settings-divider"></div>
+            <div class="prompts-section">
+              <div class="prompts-title">System Prompts</div>
+              <div class="prompt-card">
+                <span class="prompt-badge ask">Ask</span>
+                <div class="prompt-text" id="promptAsk">加载中...</div>
+              </div>
+              <div class="prompt-card">
+                <span class="prompt-badge plan">Plan</span>
+                <div class="prompt-text" id="promptPlan">加载中...</div>
+              </div>
+              <div class="prompt-card">
+                <span class="prompt-badge craft">Craft</span>
+                <div class="prompt-text" id="promptCraft">加载中...</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Context usage indicator -->
+        <div class="context-indicator">
+          <div class="context-header">
+            <span>上下文使用</span>
+            <span id="contextUsed" class="context-usage">0</span>/<span id="contextTotal" class="context-total">15,000</span>
+          </div>
+          <div class="context-bar">
+            <div id="contextBarUsed" class="context-bar-fill" style="width: 0%"></div>
+          </div>
+        </div>
+
+        <!-- File tree (collapsible) -->
+        <div class="file-tree-section">
+          <div class="tree-header">
+            <span class="tree-title">文件浏览器</span>
+            <button id="refreshTreeBtn" type="button" class="icon-btn" title="刷新">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+              </svg>
+            </button>
+          </div>
+          <div class="tree-search">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+            </svg>
+            <input id="treeSearchInput" type="text" spellcheck="false" placeholder="搜索文件..." />
+          </div>
+          <div id="treeView" class="tree-view"></div>
+        </div>
+      </section>
+
+      <!-- Workspace -->
+      <section class="workspace">
+        <!-- Header bar -->
+        <div class="workspace-header">
+          <div class="workspace-title">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+            </svg>
+            <span>CodeLens</span>
+          </div>
+          <div class="workspace-actions">
+            <button id="clearBtn" type="button" class="icon-btn" title="清空对话">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+              </svg>
+            </button>
+            <button id="toggleTerminalBtn" type="button" class="icon-btn" title="终端">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Main content area -->
+        <div class="workspace-content">
+          <div class="main-split">
+            <!-- Left: Chat panel -->
+            <div class="chat-panel">
+              <div id="messages" class="messages">
+                <article class="message assistant">
+                  <div class="message-avatar">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20z"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/>
+                    </svg>
+                  </div>
+                  <div class="message-content">
+                    <div class="message-header">
+                      <span class="role">CodeLens</span>
+                      <span class="time">刚刚</span>
+                    </div>
+                    <div class="content markdown">
+                      <p>欢迎使用 <strong>CodeLens</strong>！我是你的AI代码助手。</p>
+                      <div class="quick-actions">
+                        <span class="quick-label">快速开始：</span>
+                        <button class="quick-btn" onclick="document.getElementById('questionInput').value='解释这个项目的主要功能';document.getElementById('askBtn').click()">解释项目功能</button>
+                        <button class="quick-btn" onclick="document.getElementById('questionInput').value='分析代码架构';document.getElementById('askBtn').click()">分析架构</button>
+                        <button class="quick-btn" onclick="document.getElementById('questionInput').value='查找潜在bug';document.getElementById('askBtn').click()">查找Bug</button>
+                      </div>
+                      <div class="tips">
+                        <p><kbd>Enter</kbd> 发送 · <kbd>Shift+Enter</kbd> 换行 · <kbd>Ctrl+1/2/3/4</kbd> 切换模式</p>
+                      </div>
+                    </div>
+                  </div>
+                </article>
+              </div>
+              <button id="scrollBottomBtn" class="scroll-bottom-btn hidden" onclick="messages.scrollTop=messages.scrollHeight">↓ 新消息</button>
+            </div>
+                  <div class="message-content">
+                    <div class="message-header">
+                      <span class="role">CodeLens</span>
+                      <span class="time">刚刚</span>
+                    </div>
+                    <div class="content markdown">
+                      <p>欢迎使用 <strong>CodeLens</strong>！我是你的AI代码助手。</p>
+                      <div class="quick-actions">
+                        <span class="quick-label">快速开始：</span>
+                        <button class="quick-btn" onclick="document.getElementById('questionInput').value='解释这个项目的主要功能';document.getElementById('askBtn').click()">解释项目功能</button>
+                        <button class="quick-btn" onclick="document.getElementById('questionInput').value='分析代码架构';document.getElementById('askBtn').click()">分析架构</button>
+                        <button class="quick-btn" onclick="document.getElementById('questionInput').value='查找潜在bug';document.getElementById('askBtn').click()">查找Bug</button>
+                      </div>
+                      <div class="tips">
+                        <p><kbd>Enter</kbd> 发送 · <kbd>Shift+Enter</kbd> 换行 · <kbd>Ctrl+N</kbd> 新建文件</p>
+                      </div>
+                    </div>
+                  </div>
+                </article>
+              </div>
+            </div>
+
+            <div class="split-resize" id="splitResize"></div>
+
+            <!-- Right: Editor panel -->
+            <div id="editorArea" class="editor-area">
+              <div class="tab-bar">
+                <div id="tabList" class="tab-list"></div>
+                <div class="tab-actions">
+                  <button id="newFileTabBtn" type="button" class="icon-btn" title="新建文件">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                    </svg>
+                  </button>
+                  <button id="editorFullscreenBtn" type="button" class="icon-btn" title="全屏">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+                    </svg>
+                  </button>
+                  <button id="editorCloseBtn" type="button" class="icon-btn" title="关闭">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              <div id="editorContainer" class="editor-container">
+                <div class="editor-welcome">
+                  <div class="welcome-icon">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                      <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/>
+                    </svg>
+                  </div>
+                  <p>选择文件开始编辑</p>
+                  <p class="welcome-hint">点击左侧文件树或使用 Ctrl+N 新建</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Agent panel (right side, overlays when active) -->
+          <div id="agentPanel" class="agent-panel hidden">
+              <div class="agent-header">
+                <div class="agent-title">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" y1="16" x2="8" y2="16"/><line x1="16" y1="16" x2="16" y2="16"/>
+                  </svg>
+                  <span id="agentTitle">Agent 执行中</span>
+                </div>
+                <div class="agent-controls">
+                  <button id="agentPauseBtn" type="button" class="icon-btn" title="暂停">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>
+                    </svg>
+                  </button>
+                  <button id="agentStopBtn" type="button" class="icon-btn" title="停止">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="6" y="6" width="12" height="12"/>
+                    </svg>
+                  </button>
+                  <button id="agentFullscreenBtn" type="button" class="icon-btn" title="全屏">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+                    </svg>
+                  </button>
+                  <button id="closeAgentBtn" type="button" class="icon-btn" title="关闭">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              <div id="agentPhaseBar" class="agent-phase-bar">
+                <div class="phase-step" data-phase="parsing">
+                  <span class="phase-icon">1</span>
+                  <span class="phase-label">分析</span>
+                </div>
+                <div class="phase-connector"></div>
+                <div class="phase-step" data-phase="planning">
+                  <span class="phase-icon">2</span>
+                  <span class="phase-label">规划</span>
+                </div>
+                <div class="phase-connector"></div>
+                <div class="phase-step" data-phase="preview">
+                  <span class="phase-icon">3</span>
+                  <span class="phase-label">预览</span>
+                </div>
+                <div class="phase-connector"></div>
+                <div class="phase-step" data-phase="applying">
+                  <span class="phase-icon">4</span>
+                  <span class="phase-label">执行</span>
+                </div>
+                <div class="phase-connector"></div>
+                <div class="phase-step" data-phase="done">
+                  <span class="phase-icon">5</span>
+                  <span class="phase-label">完成</span>
+                </div>
+              </div>
+
+              <div id="agentThinking" class="agent-thinking">
+                <div class="thinking-label">思考中...</div>
+                <div class="thinking-content" id="thinkingContent"></div>
+              </div>
+
+              <div class="agent-body">
+                <div class="agent-main-col">
+                  <div id="agentSteps" class="agent-steps"></div>
+                  <div id="agentOutput" class="agent-output hidden">
+                    <div class="agent-section-header"><span>最终输出</span></div>
+                    <div id="agentOutputContent" class="agent-output-content"></div>
+                  </div>
+                </div>
+                <div class="agent-side-col">
+                  <div id="agentTodoPanel" class="agent-todo-panel">
+                    <div class="agent-todo-header">
+                      <span>任务清单</span>
+                      <span id="agentTodoProgress" class="agent-todo-progress">0/0</span>
+                    </div>
+                    <div id="agentTodoList" class="agent-todo-list"></div>
+                  </div>
+                  <div id="agentPreview" class="agent-preview hidden">
+                    <div class="preview-header">
+                      <span>修改预览</span>
+                      <span id="previewCount" class="preview-count"></span>
+                    </div>
+                    <div id="previewFiles" class="preview-files"></div>
+                    <div class="preview-actions">
+                      <button id="previewApproveAllBtn" type="button" class="btn-approve">全部批准</button>
+                      <button id="previewRejectAllBtn" type="button" class="btn-reject">全部拒绝</button>
+                    </div>
+                  </div>
+                  <div id="agentApplying" class="agent-applying hidden">
+                    <div id="applySteps" class="apply-steps"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Terminal panel -->
+          <div id="terminalPanel" class="terminal-panel hidden">
+            <div class="terminal-header">
+              <div class="terminal-title">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+                </svg>
+                <span>终端</span>
+              </div>
+              <button id="closeTerminalBtn" type="button" class="icon-btn">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+            </div>
+            <div id="terminalContainer" class="terminal-container"></div>
+          </div>
+        </div>
+
+        <!-- Composer -->
+        <form id="askForm" class="composer">
+          <div class="composer-row">
+            <select id="modeSelect" class="mode-select" title="模式">
+              <option value="ask">💬 Ask</option>
+              <option value="plan">📋 Plan</option>
+              <option value="craft">✏️ Craft</option>
+              <option value="agent">🤖 Agent</option>
+            </select>
+            <div class="input-wrapper">
+              <textarea id="questionInput" rows="1" placeholder="输入问题..." disabled></textarea>
+              <div class="input-actions">
+                <button id="commentBtn" type="button" class="input-action-btn" title="生成注释">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <button id="askBtn" type="submit" class="submit-btn" disabled>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+              </svg>
+            </button>
+          </div>
+        </form>
+      </section>
+    </main>
+
+    <!-- Directory browser overlay -->
+    <div id="dirOverlay" class="dir-overlay hidden">
+      <div class="dir-dialog">
+        <div class="dir-header">
+          <h3>选择文件夹</h3>
+          <button id="dirCloseBtn" type="button" class="icon-btn">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+        <div class="dir-path-bar">
+          <input id="dirPathInput" spellcheck="false" placeholder="输入路径后按 Enter 跳转..." />
+          <button id="dirGoBtn" type="button" class="primary-btn">跳转</button>
+        </div>
+        <div id="dirList" class="dir-list"></div>
+        <div class="dir-footer">
+          <span id="dirCurrentLabel" class="dir-current">当前: —</span>
+          <button id="dirSelectBtn" type="button" class="primary-btn">选择此目录</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="/static/app.js?v=20260613"></script>
+  </body>
+</html>

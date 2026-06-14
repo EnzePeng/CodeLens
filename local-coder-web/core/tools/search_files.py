@@ -30,12 +30,14 @@ class SearchFilesTool(Tool):
 
     def execute(
         self,
-        pattern: str,
+        pattern: str = "",
         path: str = "",
         file_glob: Optional[str] = None,
         max_results: int = 50,
         **kwargs
     ) -> str:
+        if not pattern:
+            raise FileAccessError("Missing required argument: pattern")
         if state.root is None:
             raise FileAccessError("No repository folder set")
 
@@ -50,6 +52,10 @@ class SearchFilesTool(Tool):
 
         if not search_dir.exists():
             raise FileAccessError(f"Search directory not found: {path}")
+
+        # Auto-convert glob patterns to regex (e.g. "*.py" -> ".*\.py")
+        if '*' in pattern or '?' in pattern:
+            pattern = fnmatch.translate(pattern)
 
         try:
             regex = re.compile(pattern, re.IGNORECASE)

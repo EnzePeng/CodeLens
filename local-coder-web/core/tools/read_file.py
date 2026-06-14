@@ -12,15 +12,19 @@ from exceptions import FileAccessError, SecurityError
 from models import state
 
 
+# Max chars to return to LLM (keep context manageable)
+MAX_RETURN_CHARS = 6000
+
+
 class ReadFileTool(Tool):
     """Read file content within the indexed repository."""
     
     name = "read_file"
-    description = "Read the content of a file. Returns file content with line numbers."
+    description = "读取文件内容并返回带行号的代码。需要分析文件时必须调用此工具。"
     parameters = {
         "path": {
             "type": "string",
-            "description": "Relative path to the file from repository root",
+            "description": "文件的相对路径，如 core/agent.py 或 config.py",
         },
         "start_line": {
             "type": "integer",
@@ -32,17 +36,33 @@ class ReadFileTool(Tool):
         },
     }
     
-    def execute(self, path: str, start_line: Optional[int] = None, end_line: Optional[int] = None, **kwargs) -> str:
+    def execute(self, path: str = "", start_line: Optional[int] = None, end_line: Optional[int] = None, **kwargs) -> str:
         """Read file content."""
+        if not path:
+            raise FileAccessError("Missing required argument: path")
         if state.root is None:
             raise FileAccessError("No repository folder set")
         
         # Security: ensure path stays within repo root
-        target = (state.root / path).resolve()
-        try:
-            target.relative_to(state.root.resolve())
-        except ValueError:
-            raise SecurityError("Path is outside the repository root")
+        # Handle both absolute and relative paths from LLM
+        p = Path(path)
+        if p.is_absolute():
+            try:
+                target = p.resolve()
+                target.relative_to(state.root.resolve())
+            except ValueError:
+                # Try stripping repo root prefix
+                try:
+                    rel = p.resolve().relative_to(state.root.resolve())
+                    target = state.root / rel
+                except ValueError:
+                    raise SecurityError("Path is outside the repository root")
+        else:
+            target = (state.root / path).resolve()
+            try:
+                target.relative_to(state.root.resolve())
+            except ValueError:
+                raise SecurityError("Path is outside the repository root")
         
         if not target.exists() or not target.is_file():
             raise FileAccessError(f"File not found: {path}")
@@ -67,11 +87,20 @@ class ReadFileTool(Tool):
                 end_idx = len(lines)
             
             selected_lines = lines[start_idx:end_idx]
-            numbered_content = "".join(
-                f"{i+1:4d}: {line}" for i, line in enumerate(selected_lines, start=start_idx + 1)
-            )
+            full_content = "".join(selected_lines)
             
-            return f"File: {path}\nLines: {start_idx+1}-{end_idx}\n\n{numbered_content}"
+            # Smart truncation for large files
+            if len(full_content) > MAX_RETURN_CHARS:
+                half = MAX_RETURN_CHARS // 2
+                head = "".join(selected_lines[:50])  # First 50 lines
+                tail = "".join(selected_lines[-30:])  # Last 30 lines
+                numbered_content = f"{head}\n\n... [{len(lines)} lines total, truncated] ...\n\n{tail}"
+            else:
+                numbered_content = "".join(
+                    f"{i+1:4d}: {line}" for i, line in enumerate(selected_lines, start=start_idx + 1)
+                )
+            
+            return f"File: {path}\nLines: {start_idx+1}-{end_idx}\nSize: {size} bytes\n\n{numbered_content}"
             
         except OSError as e:
             raise FileAccessError(f"Read failed: {e}")

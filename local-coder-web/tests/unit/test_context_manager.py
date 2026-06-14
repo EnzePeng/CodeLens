@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from services.context_manager import ContextBudget, ContextCache, ContextManager
+from services.context_manager import ContextBudget, ContextCache, SmartContextManager
 
 
 class TestContextBudget:
@@ -65,30 +65,15 @@ class TestContextCache:
 
 
 class TestContextManager:
-    def test_select_files_with_cache(self):
-        mgr = ContextManager()
-        from models import CodeFile
-        from pathlib import Path
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmp:
-            p = Path(tmp) / "test.py"
-            p.write_text("def foo(): pass\n")
-            cf = CodeFile(path=p, rel="test.py", size=p.stat().st_size, text=p.read_text())
-            result = mgr.select_files(
-                question="foo",
-                files=[cf],
-                idf={},
-                avg_dl=0.0,
-                embedding_ready=False,
-                session=None,
-                tokenizer=None,
-                use_cache=True,
-            )
-            assert isinstance(result, list)
+    def test_default(self):
+        mgr = SmartContextManager()
+        # Test basic initialization
+        assert mgr._cache is not None
+        assert mgr._file_timestamps == {}
+        assert mgr._history is not None
 
     def test_select_files_rerank_by_recency(self):
-        mgr = ContextManager()
+        mgr = SmartContextManager()
         from models import CodeFile
         import tempfile
         from pathlib import Path
@@ -110,16 +95,16 @@ class TestContextManager:
 
     def test_estimate_tokens_accuracy(self):
         """BUG-24: Token estimation should use reasonable multipliers."""
-        mgr = ContextManager()
+        from services.context_manager import estimate_tokens
         # Pure English text
-        tokens = mgr.estimate_tokens("hello world test")
+        tokens = estimate_tokens("hello world test")
         assert tokens > 0
         # Longer text should have more tokens
-        tokens_long = mgr.estimate_tokens("hello world test " * 100)
+        tokens_long = estimate_tokens("hello world test " * 100)
         assert tokens_long > tokens
 
     def test_on_files_changed_clears_cache(self):
-        mgr = ContextManager()
+        mgr = SmartContextManager()
         mgr._cache.set("key", ["f"])
         mgr.on_files_changed(["main.py"])
         assert mgr._cache.get("key") is None

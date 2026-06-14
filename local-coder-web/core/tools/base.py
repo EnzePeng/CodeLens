@@ -16,14 +16,15 @@ from exceptions import ToolNotFoundError, ToolExecutionError
 ALWAYS_AVAILABLE = {"read_file", "list_directory", "search_files"}
 
 _RELEVANT_TOOL_KEYWORDS: dict[str, list[str]] = {
-    "file_read": ["read", "open", "view", "check", "查看", "读取", "打开", "浏览", "查看"],
+    "file_read": ["read", "open", "view", "check", "查看", "读取", "打开", "浏览"],
     "file_write": ["write", "create", "edit", "modify", "新增", "修改", "创建", "写入", "更新", "change", "add"],
-    "search": ["search", "find", "grep", "查找", "搜索", "定位", "match"],
+    "search": ["search", "find", "grep", "查找", "搜索", "定位", "match", "pattern", "glob"],
     "execution": ["run", "execute", "test", "build", "运行", "执行", "测试", "编译", "命令"],
     "git": ["git", "commit", "push", "branch", "rebase", "merge", "stash", "tag"],
     "undo": ["undo", "revert", "恢复", "撤销", "回滚"],
-    "code_analysis": ["analyze", "complexity", "reference", "统计", "分析", "count", "lines"],
+    "code_analysis": ["analyze", "complexity", "reference", "统计", "分析", "count", "lines", "symbol", "definition"],
     "project": ["config", "package", "dependency", "依赖", "配置", "project", "lockfile"],
+    "lsp": ["definition", "references", "hover", "symbol", "跳转", "定义", "引用"],
 }
 
 

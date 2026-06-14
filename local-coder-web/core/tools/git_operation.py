@@ -35,7 +35,9 @@ class GitOperationTool(Tool):
     }
     DANGEROUS_COMMANDS = {"push", "reset --hard", "rebase --hard", "force", "filter-branch"}
 
-    def execute(self, command: str, args: str = "", confirm_write: bool = False, **kwargs) -> str:
+    def execute(self, command: str = "", args: str = "", confirm_write: bool = False, **kwargs) -> str:
+        if not command:
+            raise SecurityError("Missing required argument: command")
         if state.root is None:
             raise SecurityError("No repository folder set")
 

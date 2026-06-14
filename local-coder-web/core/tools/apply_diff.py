@@ -3,6 +3,7 @@ Tool: apply_diff - Apply unified diff to file.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -29,8 +30,10 @@ class ApplyDiffTool(Tool):
         },
     }
     
-    def execute(self, path: str, diff: str, **kwargs) -> str:
+    def execute(self, path: str = "", diff: str = "", **kwargs) -> str:
         """Apply diff to file."""
+        if not path or not diff:
+            raise FileAccessError(f"Missing required arguments: {'path' if not path else 'diff'}")
         if state.root is None:
             raise FileAccessError("No repository folder set")
         
@@ -61,11 +64,25 @@ class ApplyDiffTool(Tool):
         if new_bytes > MAX_FILE_BYTES:
             raise FileAccessError(f"Result too large: {new_bytes} bytes (max: {MAX_FILE_BYTES})")
         
-        # Write back
+        # Write back with atomic write
         try:
-            target.write_text(new_content, encoding="utf-8")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # Atomic write: write to temp file then rename
+            temp_path = target.with_suffix(target.suffix + ".tmp")
+            temp_path.write_text(new_content, encoding="utf-8")
+            os.replace(str(temp_path), str(target))
         except OSError as e:
+            # Clean up temp file on failure
+            try:
+                target.with_suffix(target.suffix + ".tmp").unlink(missing_ok=True)
+            except OSError:
+                pass
             raise FileAccessError(f"Write failed: {e}")
+
+        # Record edit for undo
+        from core.tools.undo_edit import get_undo_manager
+        undo_mgr = get_undo_manager()
+        undo_mgr.record_edit(path, original, new_content, "apply_diff")
         
         # Parse diff for stats
         patches = parse_unified_diff(diff)

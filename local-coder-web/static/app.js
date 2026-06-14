@@ -48,13 +48,6 @@ const dirList       = document.querySelector("#dirList");
 const dirSelectBtn  = document.querySelector("#dirSelectBtn");
 const dirCurrentLabel = document.querySelector("#dirCurrentLabel");
 
-// File viewer
-const fileOverlay     = document.querySelector("#fileOverlay");
-const fileViewerTitle = document.querySelector("#fileViewerTitle");
-const fileViewerMeta  = document.querySelector("#fileViewerMeta");
-const fileCloseBtn    = document.querySelector("#fileCloseBtn");
-const codeBody        = document.querySelector("#codeBody");
-
 // Terminal
 const toggleTerminalBtn = document.querySelector("#toggleTerminalBtn");
 const terminalPanel     = document.querySelector("#terminalPanel");
@@ -65,12 +58,11 @@ const agentPanel        = document.querySelector("#agentPanel");
 const agentPauseBtn     = document.querySelector("#agentPauseBtn");
 const agentStopBtn      = document.querySelector("#agentStopBtn");
 const closeAgentBtn     = document.querySelector("#closeAgentBtn");
-const agentTimeline     = document.querySelector("#agentTimeline");
 const agentOutput       = document.querySelector("#agentOutput");
 
 // Agent state
 let agentTaskId = null;
-let agentEventSource = null;
+let agentPaused = false;
 const terminalContainer = document.querySelector("#terminalContainer");
 const workspaceContent  = document.querySelector(".workspace-content");
 
@@ -94,7 +86,11 @@ if (typeof window.__codelens_ready__ === "undefined") {
 /* ─── State ───────────────────────────────────────────────────── */
 let isBusy = false;
 let currentMode = "ask";
-let messageHistory = [];
+let messageHistory = JSON.parse(localStorage.getItem("codelens-chat-history") || "[]");
+
+function saveChatHistory() {
+  localStorage.setItem("codelens-chat-history", JSON.stringify(messageHistory.slice(-100)));
+}
 let currentTreeData = null;  // Store tree JSON for re-rendering
 let terminalHistory = [];
 let terminalHistoryIndex = -1;
@@ -157,7 +153,24 @@ function setBusy(busy) {
 if (modeSelect) {
   modeSelect.addEventListener("change", () => {
     currentMode = modeSelect.value;
-    if (workspace) workspace.className = `workspace ${currentMode}-mode`;
+    // Set workspace data-mode (for future CSS hooks)
+    if (workspace) workspace.setAttribute("data-mode", currentMode);
+    // Update mode badge
+    const badge = document.getElementById("workspaceMode");
+    if (badge) {
+      const labels = { ask: "Ask", plan: "Plan", craft: "Craft", agent: "Agent" };
+      badge.textContent = labels[currentMode] || "Ask";
+    }
+    // Switch views: agent mode → view-agent; else → view-chat
+    const viewChat = document.getElementById("viewChat");
+    const viewAgent = document.getElementById("viewAgent");
+    if (currentMode === "agent") {
+      viewChat && viewChat.classList.remove("active");
+      viewAgent && viewAgent.classList.add("active");
+    } else {
+      viewAgent && viewAgent.classList.remove("active");
+      viewChat && viewChat.classList.add("active");
+    }
     const hints = {
       ask:   "输入你的代码问题… (Enter 发送 / Shift+Enter 换行)",
       plan:  "描述你需要规划的功能或架构… (Enter 发送)",
@@ -165,17 +178,7 @@ if (modeSelect) {
       agent: "描述你想要完成的任务，Agent 将自主执行多步操作… (Enter 发送)",
     };
     if (questionInput) questionInput.placeholder = hints[currentMode] || hints.ask;
-    const btnLabels = { ask: "发送", plan: "规划", craft: "编辑", agent: "执行" };
-    if (askBtn) askBtn.textContent = btnLabels[currentMode] || "发送";
-
-    // Toggle Agent panel
-    if (agentPanel) {
-      if (currentMode === "agent") {
-        agentPanel.classList.remove("hidden");
-      } else {
-        agentPanel.classList.add("hidden");
-      }
-    }
+    // askBtn is an SVG button, not text; keep as is
   });
 }
 
@@ -223,11 +226,11 @@ function updateContextDisplay(used, total) {
   // Color based on usage
   if (!contextBarUsed) return;
   if (percent > 85) {
-    contextBarUsed.style.background = "#e8a8a8";
+    contextBarUsed.style.background = "var(--error)";
   } else if (percent > 60) {
-    contextBarUsed.style.background = "#e8c88a";
+    contextBarUsed.style.background = "var(--warning)";
   } else {
-    contextBarUsed.style.background = "#1f6f5b";
+    contextBarUsed.style.background = "var(--success)";
   }
 }
 
@@ -272,7 +275,9 @@ async function loadSettings() {
 if (clearBtn) {
   clearBtn.addEventListener("click", () => {
     if (isBusy) return;
+    if (!confirm("确定要清空所有对话记录吗？此操作不可撤销。")) return;
     messageHistory = [];
+    saveChatHistory();
     messages.innerHTML = "";
     addInfoMessage("对话已清空。");
   });
@@ -520,13 +525,8 @@ function updateTreeView(treeData) {
   renderTree(treeData, rootChildren, 0);
 }
 
-/* ─── File viewer ─────────────────────────────────────────────── */
+/* ─── File viewer (opens in editor tab) ─────────────────────── */
 async function openFileViewer(filePath, fileName, fileSize) {
-  fileOverlay.classList.remove("hidden");
-  fileViewerTitle.textContent = fileName || filePath;
-  fileViewerMeta.textContent = "加载中…";
-  codeBody.innerHTML = "";
-
   try {
     const resp = await fetch("/api/read-file", {
       method: "POST",
@@ -535,82 +535,21 @@ async function openFileViewer(filePath, fileName, fileSize) {
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
-
-    fileViewerTitle.textContent = data.path;
-    const sizeStr = data.size > 1024 ? `${(data.size / 1024).toFixed(1)} KB` : `${data.size} B`;
-    const lineCount = data.content.split("\n").length;
-    fileViewerMeta.textContent = `${sizeStr} · ${lineCount} 行 · ${data.ext || "未知类型"}`;
-
-    renderCodeTable(data.content, data.ext);
+    openFileInTab(filePath, data.path || fileName, data.content || "");
   } catch (err) {
-    fileViewerMeta.textContent = "";
-    codeBody.innerHTML = `<tr><td class="line-num"></td><td class="code-line error-line">加载失败：${escapeHtml(err.message)}</td></tr>`;
+    addInfoMessage(`❌ 打开文件失败: ${err.message}`);
   }
 }
 
-function renderCodeTable(content, ext) {
-  codeBody.innerHTML = "";
-
-  const lang = EXT_TO_LANG[ext] || "";
-  const lines = content.split("\n");
-
-  // Try highlight.js if available
-  let highlighted = null;
-  if (lang && typeof hljs !== "undefined" && hljs.getLanguage(lang)) {
-    try {
-      highlighted = hljs.highlight(content, { language: lang }).value;
-    } catch {}
-  }
-
-  if (highlighted) {
-    // Split highlighted HTML by newlines to create line-by-line table
-    const hlLines = highlighted.split("\n");
-    for (let i = 0; i < hlLines.length; i++) {
-      const tr = document.createElement("tr");
-      const tdNum = document.createElement("td");
-      tdNum.className = "line-num";
-      tdNum.textContent = i + 1;
-      const tdCode = document.createElement("td");
-      tdCode.className = "code-line hljs";
-      tdCode.innerHTML = hlLines[i] || " ";
-      tr.append(tdNum, tdCode);
-      codeBody.appendChild(tr);
-    }
-  } else {
-    // Fallback: plain text with line numbers
-    for (let i = 0; i < lines.length; i++) {
-      const tr = document.createElement("tr");
-      const tdNum = document.createElement("td");
-      tdNum.className = "line-num";
-      tdNum.textContent = i + 1;
-      const tdCode = document.createElement("td");
-      tdCode.className = "code-line";
-      tdCode.textContent = lines[i] || " ";
-      tr.append(tdNum, tdCode);
-      codeBody.appendChild(tr);
-    }
-  }
-}
-
-fileCloseBtn.addEventListener("click", () => {
-  fileOverlay.classList.add("hidden");
-});
-
-fileOverlay.addEventListener("click", (e) => {
-  if (e.target === fileOverlay) fileOverlay.classList.add("hidden");
-});
-
-// Escape key closes file viewer and dir overlay, also exits fullscreen modes
+// Escape key closes dir overlay, also exits fullscreen modes
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
-    // Exit agent fullscreen first
     if (agentPanel && agentPanel.classList.contains("fullscreen")) {
       agentPanel.classList.remove("fullscreen");
       const afb = document.querySelector("#agentFullscreenBtn");
       if (afb) { afb.textContent = "⛶"; afb.title = "全屏"; }
       return;
     }
-    // Exit editor fullscreen
     if (editorArea && editorArea.classList.contains("fullscreen")) {
       editorArea.classList.remove("fullscreen");
       const tabBar = document.querySelector(".tab-bar");
@@ -622,9 +561,7 @@ document.addEventListener("keydown", (e) => {
       setTimeout(() => { if (codeMirrorEditor) codeMirrorEditor.refresh(); }, 300);
       return;
     }
-    if (!fileOverlay.classList.contains("hidden")) {
-      fileOverlay.classList.add("hidden");
-    } else if (!dirOverlay.classList.contains("hidden")) {
+    if (!dirOverlay.classList.contains("hidden")) {
       dirOverlay.classList.add("hidden");
     }
   }
@@ -633,6 +570,7 @@ document.addEventListener("keydown", (e) => {
 /* ─── Add a user message bubble ──────────────────────────────── */
 function addUserMessage(text) {
   messageHistory.push({ role: "user", mode: currentMode, content: text, timestamp: Date.now() });
+  saveChatHistory();
 
   const article = document.createElement("article");
   article.className = "message user";
@@ -644,7 +582,10 @@ function addUserMessage(text) {
   const modeTag = document.createElement("span");
   modeTag.className = `mode-tag ${currentMode}`;
   modeTag.textContent = currentMode.toUpperCase();
-  header.append(roleEl, modeTag);
+  const timeEl = document.createElement("span");
+  timeEl.className = "time";
+  timeEl.textContent = new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+  header.append(roleEl, modeTag, timeEl);
   const contentEl = document.createElement("div");
   contentEl.className = "content";
   contentEl.textContent = text;
@@ -786,11 +727,12 @@ async function streamAsk(question) {
     bubble.thinkingPanel.remove();
     bubble.contentEl.textContent = `请求失败：${err.message}`;
   } finally {
+    bubble.cursor.remove();
+    bubble.article.classList.remove("streaming");
     const btnLabels = { ask: "发送", plan: "规划", craft: "编辑", agent: "执行" };
     askBtn.textContent = btnLabels[currentMode] || "发送";
     setBusy(false);
     questionInput.focus();
-    // Reset context display after request completes
     setTimeout(() => updateContextDisplay(0, modelSettings.contextLimit), 1500);
   }
 }
@@ -837,6 +779,7 @@ function _finalRender(evt, bubble) {
 
   const answerText = evt.answer || "";
   messageHistory.push({ role: "assistant", mode: currentMode, content: answerText, timestamp: Date.now() });
+  saveChatHistory();
 
   if (evt.thinking?.trim()) {
     bubble.thinkingPanel.classList.remove("hidden");
@@ -1275,7 +1218,67 @@ if (askForm) {
   });
 }
 
+// Comment generation button
+const commentBtn = document.querySelector("#commentBtn");
+if (commentBtn) {
+  commentBtn.addEventListener("click", async () => {
+    // Get selected code from editor
+    const editor = document.querySelector(".CodeMirror");
+    if (!editor || !editor.CodeMirror) {
+      alert("请先在编辑器中打开文件并选中代码");
+      return;
+    }
+    
+    const cm = editor.CodeMirror;
+    const selection = cm.getSelection();
+    
+    if (!selection || !selection.trim()) {
+      alert("请先选中需要生成注释的代码");
+      return;
+    }
+    
+    if (isBusy) return;
+    setBusy(true);
+    
+    try {
+      // Detect language from current file
+      const currentFile = document.querySelector(".tab.active");
+      const language = currentFile ? currentFile.dataset.language || "" : "";
+      
+      const response = await fetch("/api/comment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code: selection,
+          language: language,
+          style: "detailed"
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      
+      const result = await response.json();
+      
+      if (result.commented_code) {
+        // Replace selected code with commented version
+        cm.replaceSelection(result.commented_code);
+        addUserMessage(`✅ 注释已生成 (耗时: ${result.latency_ms.toFixed(0)}ms)`);
+      }
+    } catch (err) {
+      addUserMessage(`❌ 注释生成失败: ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  });
+}
+
 /* ─── Init: restore folder state ──────────────────────────────── */
+// Show loading state
+if (folderStatus) folderStatus.textContent = "连接中...";
+if (questionInput) questionInput.placeholder = "正在连接服务器...";
+
 fetch("/api/status")
   .then(r => r.json())
   .then(data => {
@@ -1283,7 +1286,6 @@ fetch("/api/status")
       folderInput.value = data.folder;
       folderStatus.textContent = data.folder;
       folderStatus.dataset.ready = "1";
-      // Enable input immediately — don't let tree parsing block it
       questionInput.disabled = false;
       askBtn.disabled = false;
       fileCount.textContent = String(data.file_count);
@@ -1295,10 +1297,19 @@ fetch("/api/status")
         console.error("[CodeLens] Failed to parse tree:", treeErr);
         updateTreeView(null);
       }
+    } else {
+      folderStatus.textContent = "未设置";
+      questionInput.disabled = false;
+      askBtn.disabled = false;
+      questionInput.placeholder = "请先在左侧设置代码文件夹...";
     }
   })
   .catch((err) => {
     console.error("[CodeLens] /api/status failed:", err);
+    folderStatus.textContent = "连接失败";
+    folderStatus.style.color = "var(--error)";
+    questionInput.disabled = false;
+    questionInput.placeholder = "服务器连接失败，请刷新页面重试...";
   });
 
 /* ─── Theme toggle ────────────────────────────────────────────── */
@@ -1414,7 +1425,7 @@ function initTerminal() {
   
   // Welcome message
   term.writeln('\x1b[1;36m╔════════════════════════════════════════════════╗\x1b[0m');
-  term.writeln('\x1b[1;36m║\x1b[0m  \x1b[1;33mLocal Coder Terminal\x1b[0m                         \x1b[1;36m║\x1b[0m');
+  term.writeln('\x1b[1;36m║\x1b[0m  \x1b[1;33mCodeLens Terminal\x1b[0m                            \x1b[1;36m║\x1b[0m');
   term.writeln('\x1b[1;36m║\x1b[0m  Type commands and press Enter to execute   \x1b[1;36m║\x1b[0m');
   term.writeln('\x1b[1;36m║\x1b[0m  Press Ctrl+C to cancel current command      \x1b[1;36m║\x1b[0m');
   term.writeln('\x1b[1;36m╚════════════════════════════════════════════════╝\x1b[0m');
@@ -1462,6 +1473,18 @@ function initTerminal() {
 
 async function executeCommand(cmd) {
   if (cmd) {
+    // Check for dangerous commands
+    const dangerousPatterns = [/rm\s+-rf/i, /rmdir\s+\/s/i, /del\s+\/f/i, /format\s+[a-z]:/i, /shutdown/i, /reboot/i, /kill/i];
+    const isDangerous = dangerousPatterns.some(p => p.test(cmd));
+    if (isDangerous) {
+      const confirmed = confirm(`⚠️ 检测到危险命令:\n\n${cmd}\n\n确定要执行吗？`);
+      if (!confirmed) {
+        term.write('\x1b[31m已取消\x1b[0m\r\n');
+        term.write('\x1b[1;32m$\x1b[0m ');
+        return;
+      }
+    }
+    
     terminalHistory.push(cmd);
     terminalHistoryIndex = terminalHistory.length;
   }
@@ -1477,10 +1500,13 @@ async function executeCommand(cmd) {
       ['ls -la', 'dir /a'],
       ['ls -l', 'dir /l'],
       ['ls -F', 'dir /b'],
+      ['ls -lah', 'dir /a'],
+      ['ls -lha', 'dir /a'],
+      ['ls -ltr', 'dir /a'],
+      ['ls -lh', 'dir /l'],
       ['ls', 'dir /b'],
       ['ll', 'dir /b'],
       ['la', 'dir /a'],
-      ['ls -lah', 'dir /a'],
       ['pwd', 'cd'],
       ['clear', 'cls'],
       ['cat ', 'type '],
@@ -1490,7 +1516,10 @@ async function executeCommand(cmd) {
       ['mkdir ', 'mkdir '],
       ['touch ', 'echo. > '],
       ['which ', 'where '],
+      ['grep -ri ', 'findstr /s /i '],
       ['grep -r ', 'findstr /s /i '],
+      ['grep -i ', 'findstr /i '],
+      ['grep -v ', 'findstr /v '],
       ['grep ', 'findstr '],
       ['head -n', 'more +'],
       ['tail -n', 'for /f'],
@@ -1516,6 +1545,46 @@ async function executeCommand(cmd) {
     }
   }
   
+  // Handle cd/chdir/pwd locally (no backend call needed)
+  const cmdLower = cmd.trim().toLowerCase();
+  if (cmdLower === 'cd' || cmdLower === 'chdir' || cmdLower === 'pwd' || 
+      cmdLower.startsWith('cd ') || cmdLower.startsWith('chdir ') || cmdLower === 'cd -') {
+    // Determine the target path
+    let targetPath = '';
+    if (cmdLower === 'cd' || cmdLower === 'chdir' || cmdLower === 'pwd') {
+      // No argument: show current directory
+      term.writeln(`\x1b[36m${currentCwd || '~'}\x1b[0m`);
+      term.write('\x1b[1;32m$\x1b[0m ');
+      return;
+    }
+    
+    // Extract path argument
+    const spaceIndex = cmd.indexOf(' ');
+    const arg = cmd.slice(spaceIndex + 1).trim();
+    
+    if (arg === '-') {
+      // cd -: go to previous directory
+      targetPath = originalCwd || currentCwd;
+    } else if (arg === '~' || arg === '') {
+      // cd ~ or cd: go to home
+      targetPath = '';
+    } else if (arg.startsWith('/')) {
+      // Absolute path
+      targetPath = arg;
+    } else if (arg.match(/^[a-zA-Z]:/)) {
+      // Windows drive letter
+      targetPath = arg;
+    } else {
+      // Relative path
+      targetPath = currentCwd ? currentCwd + '/' + arg : arg;
+    }
+    
+    currentCwd = targetPath;
+    term.writeln(`\x1b[36m📁 ${currentCwd || '~'}\x1b[0m`);
+    term.write('\x1b[1;32m$\x1b[0m ');
+    return;
+  }
+  
   // Show executing status with color
   const displayCmd = isWindows && windowsCmd !== cmd ? `${cmd} → ${windowsCmd}` : cmd;
   term.write(`\x1b[33m⚡ Executing: ${displayCmd}...\x1b[0m\r\n`);
@@ -1538,31 +1607,6 @@ async function executeCommand(cmd) {
       }
       if (data.stderr) {
         term.writeln(`\x1b[31m${data.stderr}\x1b[0m`);
-      }
-      
-      // Update cwd if command was cd
-      if (cmd.startsWith('cd ')) {
-        const newPath = cmd.slice(3).trim();
-        
-        if (newPath === '-' && originalCwd) {
-          // cd -: go to previous directory
-          currentCwd = originalCwd;
-        } else if (newPath === '~' || newPath === '') {
-          // cd ~ or cd: go to home
-          currentCwd = "";
-        } else if (newPath.startsWith('/')) {
-          // Absolute path
-          currentCwd = newPath;
-        } else if (newPath.match(/^[a-zA-Z]:/)) {
-          // Windows drive letter
-          currentCwd = newPath;
-        } else {
-          // Relative path
-          currentCwd = currentCwd ? currentCwd + '/' + newPath : newPath;
-        }
-        
-        // Show new directory
-        term.writeln(`\x1b[36m📁 ${currentCwd || '~'}\x1b[0m`);
       }
       
       if (data.returncode !== 0) {
@@ -1627,6 +1671,7 @@ if (editorCloseBtn) {
       if (tabBar) tabBar.classList.remove("editor-fullscreen-visible");
     }
     editorArea.classList.add("collapsed");
+    editorArea.classList.remove("has-editor");
     editorClosed = true;
     messagesArea.classList.remove("has-editor");
     messagesArea.style.maxHeight = "";
@@ -1694,23 +1739,19 @@ function getCmMode(ext) {
 }
 
 function initCodeMirror(content = "", mode = "text") {
-  // Remove existing editor
   const existingWrapper = editorContainer.querySelector(".CodeMirror-wrapper");
   if (existingWrapper) {
     existingWrapper.remove();
   }
   
-  // Create wrapper
   const wrapper = document.createElement("div");
   wrapper.className = "CodeMirror-wrapper";
   wrapper.style.height = "100%";
   editorContainer.appendChild(wrapper);
   
-  // Create textarea for CodeMirror
   const textarea = document.createElement("textarea");
   wrapper.appendChild(textarea);
   
-  // Initialize CodeMirror
   codeMirrorEditor = CodeMirror.fromTextArea(textarea, {
     mode: mode,
     theme: "material-darker",
@@ -1725,17 +1766,45 @@ function initCodeMirror(content = "", mode = "text") {
     extraKeys: {
       "Ctrl-S": saveCurrentFile,
       "Cmd-S": saveCurrentFile,
+      "Tab": function(cm) {
+        if (completions.length > 0 && selectedCompletionIndex >= 0) {
+          applyCompletion(selectedCompletionIndex);
+          return;
+        }
+        cm.replaceSelection("  ", "end");
+      },
+      "Escape": function(cm) { hideCompletionPanel(); },
+      "Down": function(cm) {
+        if (completionPanel && completions.length > 0) {
+          selectCompletion((selectedCompletionIndex + 1) % completions.length);
+          return true;
+        }
+      },
+      "Up": function(cm) {
+        if (completionPanel && completions.length > 0) {
+          selectCompletion((selectedCompletionIndex - 1 + completions.length) % completions.length);
+          return true;
+        }
+      },
+      "Enter": function(cm) {
+        if (completionPanel && completions.length > 0 && selectedCompletionIndex >= 0) {
+          applyCompletion(selectedCompletionIndex);
+          return true;
+        }
+      },
     },
   });
   
   codeMirrorEditor.setValue(content);
   
-  // Handle changes
   codeMirrorEditor.on("change", () => {
     if (activeTabIndex >= 0 && openTabs[activeTabIndex]) {
       openTabs[activeTabIndex].content = codeMirrorEditor.getValue();
-      openTabs[activeTabIndex].modified = true;
-      updateTabUI();
+      if (!openTabs[activeTabIndex].modified) {
+        openTabs[activeTabIndex].modified = true;
+        const tabEl = tabList.querySelector(`.tab[data-index="${activeTabIndex}"] .tab-name`);
+        if (tabEl) tabEl.textContent = "● " + openTabs[activeTabIndex].name;
+      }
     }
   });
   
@@ -1763,6 +1832,8 @@ function openFileInTab(filePath, fileName, content) {
     content: content,
     modified: false,
     mode: mode,
+    cursorPos: null,
+    scrollTop: 0,
   });
 
   switchToTab(openTabs.length - 1);
@@ -1780,7 +1851,10 @@ function openFileInTab(filePath, fileName, content) {
     }
   }
 
-  // Show editor, hide welcome
+  // Show editor
+  editorArea.classList.add("has-editor");
+
+  // Hide welcome, show editor
   const welcome = editorContainer.querySelector(".editor-welcome");
   if (welcome) welcome.style.display = "none";
 
@@ -1791,13 +1865,23 @@ function openFileInTab(filePath, fileName, content) {
 function switchToTab(index) {
   if (index < 0 || index >= openTabs.length) return;
   
+  const prevIndex = activeTabIndex;
   activeTabIndex = index;
   const tab = openTabs[index];
   
-  // Initialize CodeMirror with tab content
-  initCodeMirror(tab.content, tab.mode);
+  if (codeMirrorEditor) {
+    if (prevIndex >= 0 && openTabs[prevIndex]) {
+      openTabs[prevIndex].cursorPos = codeMirrorEditor.getCursor();
+      openTabs[prevIndex].scrollTop = codeMirrorEditor.getScrollInfo().top;
+    }
+    codeMirrorEditor.setValue(tab.content);
+    codeMirrorEditor.setOption("mode", tab.mode);
+    if (tab.cursorPos) codeMirrorEditor.setCursor(tab.cursorPos);
+    if (tab.scrollTop) codeMirrorEditor.scrollTo(0, tab.scrollTop);
+  } else {
+    initCodeMirror(tab.content, tab.mode);
+  }
   
-  // Update tab UI
   updateTabUI();
 }
 
@@ -1847,6 +1931,7 @@ function closeTab(index) {
     codeMirrorEditor = null;
 
     messagesArea.classList.remove("has-editor");
+    editorArea.classList.remove("has-editor");
     if (!editorClosed) {
       messagesArea.style.maxHeight = "";
     }
@@ -1914,35 +1999,51 @@ async function saveCurrentFile() {
   }
 }
 
-// Override file viewer click to open in editor
-const originalOpenFileViewer = openFileViewer;
-window.openFileViewer = async function(filePath, fileName, fileSize) {
-  // Load file content first
-  try {
-    const resp = await fetch("/api/read-file", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: filePath }),
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
-    
-    // Open in tab instead of viewer
-    openFileInTab(filePath, data.path || fileName, data.content || "");
-    
-  } catch (err) {
-    addInfoMessage(`❌ 打开文件失败: ${err.message}`);
-  }
-};
-
 // New file tab button
 if (newFileTabBtn) {
   newFileTabBtn.addEventListener("click", () => {
-    const fileName = prompt("请输入新文件名:", "untitled.py");
-    if (!fileName) return;
-    
-    openFileInTab(fileName, fileName, "# 新文件\n");
+    showNewFileDialog();
   });
+}
+
+function showNewFileDialog() {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal-dialog">
+      <h3>新建文件</h3>
+      <input type="text" id="newFileNameInput" class="modal-input" value="untitled.py" placeholder="输入文件名..." />
+      <div class="modal-actions">
+        <button class="modal-cancel" onclick="this.closest('.modal-overlay').remove()">取消</button>
+        <button class="modal-confirm" id="newFileConfirmBtn">创建</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  
+  const input = document.getElementById("newFileNameInput");
+  input.focus();
+  input.select();
+  
+  document.getElementById("newFileConfirmBtn").onclick = () => {
+    const fileName = input.value.trim();
+    if (fileName) {
+      openFileInTab(fileName, fileName, "# 新文件\n");
+    }
+    overlay.remove();
+  };
+  
+  input.onkeydown = (e) => {
+    if (e.key === "Enter") {
+      document.getElementById("newFileConfirmBtn").click();
+    } else if (e.key === "Escape") {
+      overlay.remove();
+    }
+  };
+  
+  overlay.onclick = (e) => {
+    if (e.target === overlay) overlay.remove();
+  };
 }
 
 // Keyboard shortcuts
@@ -2116,47 +2217,6 @@ function applyCompletion(index) {
   codeMirrorEditor.focus();
 }
 
-// Handle Tab key to accept completion
-const originalInitCodeMirror = initCodeMirror;
-window.initCodeMirror = function(content = "", mode = "text") {
-  const editor = originalInitCodeMirror(content, mode);
-  
-  // Add Tab handler for completion
-  editor.addKeyMap({
-    "Tab": function(cm) {
-      if (completions.length > 0 && selectedCompletionIndex >= 0) {
-        applyCompletion(selectedCompletionIndex);
-        return;
-      }
-      // Default: insert tab
-      cm.replaceSelection("  ", "end");
-    },
-    "Escape": function(cm) {
-      hideCompletionPanel();
-    },
-    "Down": function(cm) {
-      if (completionPanel && completions.length > 0) {
-        selectCompletion((selectedCompletionIndex + 1) % completions.length);
-        return true;
-      }
-    },
-    "Up": function(cm) {
-      if (completionPanel && completions.length > 0) {
-        selectCompletion((selectedCompletionIndex - 1 + completions.length) % completions.length);
-        return true;
-      }
-    },
-    "Enter": function(cm) {
-      if (completionPanel && completions.length > 0 && selectedCompletionIndex >= 0) {
-        applyCompletion(selectedCompletionIndex);
-        return true;
-      }
-    },
-  });
-  
-  return editor;
-};
-
 /* ─── Agent Mode Functions ──────────────────────────────────────── */
 
 async function startAgentTask(query) {
@@ -2164,63 +2224,126 @@ async function startAgentTask(query) {
     alert("请先设置代码文件夹");
     return;
   }
-  
+
   setBusy(true);
-  
-  // Clear agent panel
-  if (agentTimeline) agentTimeline.innerHTML = "";
-  if (agentOutput) agentOutput.innerHTML = "";
-  
+
+  // Reset v2 agent view
+  const agentStream = document.getElementById("agentStream");
+  if (agentStream) agentStream.innerHTML = "";
+  const outputEl = document.getElementById("agentOutput");
+  if (outputEl) {
+    outputEl.classList.add("hidden");
+    const outputContent = document.getElementById("agentOutputContent");
+    if (outputContent) outputContent.innerHTML = "";
+  }
+  const thinkingEl = document.getElementById("thinkingContent");
+  if (thinkingEl) thinkingEl.textContent = "";
+  const thinkingLen = document.getElementById("thinkingLen");
+  if (thinkingLen) thinkingLen.textContent = "";
+  const thinkingBlock = document.getElementById("agentThinking");
+  if (thinkingBlock) thinkingBlock.classList.add("collapsed");
+  // Reset route badge
+  const badge = document.getElementById("agentRouteBadge");
+  if (badge) { badge.className = "agent-route-badge hidden"; badge.textContent = ""; }
+  // Reset phase bar
+  document.querySelectorAll(".phase-step").forEach(el => {
+    el.classList.remove("active", "done");
+  });
+  // Reset todo list
+  const todoList = document.getElementById("agentTodoList");
+  if (todoList) todoList.innerHTML = '<div class="agent-todo-empty">等待任务开始...</div>';
+  const todoProgress = document.getElementById("agentTodoProgress");
+  if (todoProgress) todoProgress.textContent = "0/0";
+  // Restore side column (may have been hidden by previous task's done event)
+  const sideCol = document.getElementById("agentSideCol");
+  const body = document.querySelector(".agent-body");
+  if (sideCol) sideCol.style.display = "";
+  if (body) body.style.gridTemplateColumns = "";
+
+  agentPaused = false;
+  renderPauseButtonIcon();
+  // Notify renderer to reset its state (thinkingLen, todoItems, tool grouping)
+  window.dispatchEvent(new Event("agent:reset"));
+  resetToolGrouping();
+  // Start heartbeat/status pill
+  startAgentHeartbeat();
+  // Load task history into the side panel
+  if (typeof loadAgentHistory === "function") loadAgentHistory();
+
+  // Switch to view-agent
+  const viewChat = document.getElementById("viewChat");
+  const viewAgent = document.getElementById("viewAgent");
+  if (viewChat) viewChat.classList.remove("active");
+  if (viewAgent) viewAgent.classList.add("active");
+  if (modeSelect) modeSelect.value = "agent";
+  if (workspace) workspace.setAttribute("data-mode", "agent");
+  const modeBadge = document.getElementById("workspaceMode");
+  if (modeBadge) modeBadge.textContent = "Agent";
+
   try {
-    // Start agent task
     const startRes = await fetch("/api/agent/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, max_steps: 15 }),
+      body: JSON.stringify({ query, max_steps: 30 }),
     });
-    
     if (!startRes.ok) {
       const err = await startRes.json();
       throw new Error(err.detail || "Failed to start agent");
     }
-    
     const startData = await startRes.json();
     agentTaskId = startData.task_id;
-    
-    // Show agent panel
-    if (agentPanel) agentPanel.classList.remove("hidden");
-    
-    // Start streaming execution
+
     await streamAgentExecution(agentTaskId);
-    
   } catch (err) {
-    appendAgentOutput(`❌ Error: ${err.message}`, "error");
+    v2AppendCard("error", "启动失败", err.message);
   } finally {
     setBusy(false);
   }
 }
 
 // Agent control button event listeners
-if (agentPauseBtn) agentPauseBtn.addEventListener("click", () => {
-  if (!agentTaskId) return;
-  const showingResume = agentPauseBtn.textContent.includes("▶️");
-  const action = showingResume ? "resume" : "pause";
-  fetch(`/api/agent/action`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ task_id: agentTaskId, action }),
-  }).catch(e => console.error("Pause/resume failed:", e));
-  agentPauseBtn.textContent = showingResume ? "⏸️" : "▶️";
-  agentPauseBtn.title = showingResume ? "暂停" : "继续";
-});
+// Render the pause/resume button's SVG icon depending on `agentPaused` state.
+// Running (agentPaused=false) shows ‖ (pause); Paused (agentPaused=true) shows ▶ (resume).
+function renderPauseButtonIcon() {
+  if (!agentPauseBtn) return;
+  agentPauseBtn.innerHTML = agentPaused
+    ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>'
+    : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
+  agentPauseBtn.title = agentPaused ? "继续" : "暂停";
+}
+
+if (agentPauseBtn) {
+  renderPauseButtonIcon();
+  agentPauseBtn.addEventListener("click", () => {
+    if (!agentTaskId) return;
+    // Decide action BEFORE flipping state: if not currently paused, we want to pause.
+    const action = agentPaused ? "resume" : "pause";
+    agentPaused = !agentPaused;
+    fetch(`/api/agent/action`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task_id: agentTaskId, action }),
+    }).catch(e => {
+      console.error("Pause/resume failed:", e);
+      // Revert UI state on failure
+      agentPaused = !agentPaused;
+      renderPauseButtonIcon();
+    });
+    renderPauseButtonIcon();
+  });
+}
 
 if (agentStopBtn) agentStopBtn.addEventListener("click", () => {
   if (!agentTaskId) return;
   fetch(`/api/agent/stop/${agentTaskId}`, { method: "POST" })
     .then(() => {
-      appendAgentOutput("⏹️ Agent 已停止", "error");
+      if (typeof v2AppendCard === "function") {
+        v2AppendCard("error", "⏹️ Agent 已停止", null, "用户停止");
+      }
       agentTaskId = null;
       setBusy(false);
+      stopAgentHeartbeat();
+      setAgentStatus("paused", null);
     })
     .catch(e => console.error("Stop failed:", e));
 });
@@ -2229,6 +2352,7 @@ if (closeAgentBtn) closeAgentBtn.addEventListener("click", () => {
   if (agentPanel) {
     agentPanel.classList.remove("fullscreen");
     agentPanel.classList.remove("preview-phase");
+    agentPanel.classList.remove("active");
     agentPanel.classList.add("hidden");
   }
   const agentFullscreenBtn = document.querySelector("#agentFullscreenBtn");
@@ -2236,9 +2360,7 @@ if (closeAgentBtn) closeAgentBtn.addEventListener("click", () => {
     agentFullscreenBtn.textContent = "⛶";
     agentFullscreenBtn.title = "全屏";
   }
-  // Clear approval timeout if any
   if (window._approvalTimeout) clearTimeout(window._approvalTimeout);
-  // Don't clear agentTaskId — agent may still be running in background
 });
 
 // Agent fullscreen toggle
@@ -2263,7 +2385,9 @@ if (agentFullscreenBtn) {
 }
 
 async function streamAgentExecution(taskId) {
-  appendAgentOutput("🤖 Agent 正在思考...", "thinking");
+  if (typeof v2AppendCard === "function") {
+    v2AppendCard("info", "🤖 Agent 正在思考...", null, "");
+  }
 
   let sseBuffer = "";
   let reader = null;
@@ -2304,518 +2428,23 @@ async function streamAgentExecution(taskId) {
     }
 
   } catch (err) {
-    appendAgentOutput(`❌ Execution error: ${err.message}`, "error");
+    if (typeof v2AppendCard === "function") {
+      v2AppendCard("error", "执行错误", `<div>${err.message}</div>`, "");
+    }
   } finally {
     if (reader) reader.releaseLock();
   }
 }
 
-function handleAgentEvent(data) {
-  switch (data.type) {
-    case "status":
-      appendAgentOutput(`📋 ${data.message}`, "info");
-      break;
-      
-    case "thinking":
-      appendAgentOutput("🤔 思考中...", "thinking");
-      break;
-      
-    case "llm_response": {
-      const raw = data.content != null ? String(data.content) : "";
-      // Strip <think>...</think> tags
-      const clean = raw.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-      if (clean) {
-        // Show non-think content (usually tool call JSON or task response)
-        appendAgentOutput(`💡 ${clean.slice(0, 600)}`, "info");
-      } else {
-        // Entire response was thinking — show a brief pulse so user knows it's alive
-        appendAgentOutput(`💭 模型推理中... (${raw.length} chars)`, "thinking");
-      }
-      break;
-    }
-      
-    case "tool_call":
-      addAgentStep(data.tool, "running");
-      appendAgentOutput(`🔧 调用工具: ${data.tool}`, "tool-call");
-      break;
-      
-    case "tool_result": {
-      const r = data.result != null ? String(data.result) : "";
-      const preview = r.length > 200 ? r.slice(0, 200) + "..." : r;
-      appendAgentOutput(`✅ 结果: ${preview}`, "tool-result");
-      updateAgentStep(data.tool, "success");
-      break;
-    }
-      
-    case "tool_error":
-      appendAgentOutput(`❌ 工具错误: ${data.error != null ? data.error : "(unknown)"}`, "error");
-      updateAgentStep(data.tool, "failed");
-      break;
-      
-    case "done":
-      appendAgentOutput(`🎉 任务完成!\n\n${data.result}`, "success");
-      updateAgentStep("done", "success");
-      updatePhaseBar("done");
-      // Reindex after agent completes (files may have been modified)
-      fetch("/api/reindex", { method: "POST" })
-        .then(r => r.json().catch(() => ({})))
-        .then(d => {
-          if (d.file_count !== undefined) {
-            if (fileCount) fileCount.textContent = String(d.file_count);
-            if (embeddingMode) embeddingMode.textContent = d.embedding_mode === "onnx" ? "ONNX 语义" : "BM25";
-            try {
-              const treeData = typeof d.tree === "string" ? JSON.parse(d.tree) : d.tree;
-              updateTreeView(treeData);
-            } catch (e) {}
-          }
-        })
-        .catch(() => {});
-      setBusy(false);
-      break;
-      
-    case "error":
-      appendAgentOutput(`❌ 错误: ${data.message}`, "error");
-      updatePhaseBar("done");
-      setBusy(false);
-      break;
-  }
-}
-
-function addAgentStep(toolName, status) {
-  if (!agentTimeline) return;
-  
-  const step = document.createElement("div");
-  step.className = "agent-step";
-  step.dataset.tool = toolName;
-  step.innerHTML = `
-    <span class="agent-step-status ${status}"></span>
-    <span class="agent-step-tool">${toolName}</span>
-    <span class="agent-step-duration">-</span>
-  `;
-  agentTimeline.appendChild(step);
-  agentTimeline.scrollTop = agentTimeline.scrollHeight;
-}
-
-function updateAgentStep(toolName, status) {
-  if (!agentTimeline) return;
-  
-  const steps = agentTimeline.querySelectorAll(".agent-step");
-  for (const step of steps) {
-    if (step.dataset.tool === toolName || (toolName === "done" && !step.dataset.done)) {
-      const statusEl = step.querySelector(".agent-step-status");
-      statusEl.className = `agent-step-status ${status}`;
-      
-      if (status === "success" || status === "failed") {
-        step.dataset.done = "true";
-      }
-      break;
-    }
-  }
-}
-
-function appendAgentOutput(text, className) {
-  if (!agentOutput) return;
-
-  const line = document.createElement("div");
-  line.className = className || "";
-  line.textContent = text;
-  agentOutput.appendChild(line);
-  agentOutput.scrollTop = agentOutput.scrollHeight;
-}
-
-/* ─── Agent Phase / Diff Preview Functions ───────────────────── */
-
-let currentAgentPlanFiles = [];  // Track plan files for approve/reject
-
-function updatePhaseBar(phase) {
-  const bar = document.querySelector("#agentPhaseBar");
-  if (!bar) return;
-  bar.classList.remove("hidden");
-
-  const steps = bar.querySelectorAll(".phase-step");
-  const phaseOrder = ["parsing", "planning", "preview", "applying", "done"];
-  const currentIdx = phaseOrder.indexOf(phase);
-
-  steps.forEach((step, i) => {
-    step.classList.remove("active", "completed");
-    if (i < currentIdx) {
-      step.classList.add("completed");
-    } else if (i === currentIdx) {
-      step.classList.add("active");
-    }
-  });
-}
-
-function showAgentThinking(content) {
-  const el = document.querySelector("#agentThinking");
-  if (!el) return;
-  el.classList.remove("hidden");
-  document.getElementById("thinkingContent").textContent = content;
-}
-
-function hideAgentThinking() {
-  const el = document.querySelector("#agentThinking");
-  if (el) el.classList.add("hidden");
-}
-
-function renderDiffPreview(planData) {
-  const preview = document.querySelector("#agentPreview");
-  const filesContainer = document.querySelector("#previewFiles");
-  const countEl = document.getElementById("previewCount");
-  if (!preview || !filesContainer) return;
-
-  currentAgentPlanFiles = [];
-  const files = planData.files || [];
-  countEl.textContent = `${files.length} 个文件待确认`;
-
-  filesContainer.innerHTML = "";
-  files.forEach((fcp, idx) => {
-    const fileEl = document.createElement("div");
-    fileEl.className = "preview-file";
-
-    // Parse diff stats from diff field or estimate from new_content
-    let added = 0, removed = 0;
-    if (fcp.diff && fcp.diff !== "(auto-generated diff)") {
-      const addedMatch = fcp.diff.match(/^\+[^-]/gm);
-      const removedMatch = fcp.diff.match(/^-[^+]/gm);
-      added = addedMatch ? addedMatch.length : 0;
-      removed = removedMatch ? removedMatch.length : 0;
-    }
-    const newLines = (fcp.new_content || "").split("\n").length;
-    if (added === 0 && removed === 0 && newLines > 0) added = newLines;
-
-    const statsClass = added > removed ? "added" : removed > added ? "removed" : "";
-    const statsText = added > 0 ? `+${added}` : removed > 0 ? `-${removed}` : `~${newLines}行`;
-
-    // Show code preview: if diff exists and isn't auto-generated, show it; otherwise show new_content
-    let contentPreview;
-    if (fcp.diff && fcp.diff !== "(auto-generated diff)") {
-      const diffLines = fcp.diff.split("\n").slice(0, 25);
-      contentPreview = diffLines.join("\n") + (diffLines.length >= 25 ? "\n..." : "");
-    } else if (fcp.new_content) {
-      const codeLines = fcp.new_content.split("\n").slice(0, 30);
-      contentPreview = codeLines.join("\n") + (codeLines.length >= 30 ? "\n..." : "");
-    } else {
-      contentPreview = "(无内容预览)";
-    }
-
-    // Use raw path in closure, NOT escaped in data-path
-    const rawPath = fcp.path;
-
-    // Build header with inline onclick to avoid data-path escaping issues
-    const header = document.createElement("div");
-    header.className = "preview-file-header";
-
-    const pathSpan = document.createElement("span");
-    pathSpan.className = "preview-path";
-    pathSpan.textContent = rawPath;
-
-    const statsSpan = document.createElement("span");
-    statsSpan.className = `preview-stats ${statsClass}`;
-    statsSpan.textContent = statsText;
-
-    const actionsDiv = document.createElement("div");
-    actionsDiv.className = "preview-actions";
-
-    const approveBtn = document.createElement("button");
-    approveBtn.className = "preview-approve";
-    approveBtn.textContent = "✅ 批准";
-    approveBtn.title = "批准此文件的修改";
-    approveBtn.onclick = function() {
-      approveFile(rawPath);
-      this.classList.add("approved");
-      this.textContent = "✅ 已批";
-      this.disabled = true;
-      const reject = this.parentElement.querySelector(".preview-reject");
-      if (reject) reject.disabled = true;
-    };
-
-    const rejectBtn = document.createElement("button");
-    rejectBtn.className = "preview-reject";
-    rejectBtn.textContent = "❌ 拒绝";
-    rejectBtn.title = "拒绝此文件的修改";
-    rejectBtn.onclick = function() {
-      rejectFile(rawPath);
-      this.classList.add("rejected");
-      this.textContent = "❌ 已拒";
-      this.disabled = true;
-      const approve = this.parentElement.querySelector(".preview-approve");
-      if (approve) approve.disabled = true;
-    };
-
-    actionsDiv.append(approveBtn, rejectBtn);
-    header.append(pathSpan, statsSpan, actionsDiv);
-    fileEl.appendChild(header);
-
-    const contentDiv = document.createElement("div");
-    contentDiv.className = "preview-content";
-    contentDiv.textContent = contentPreview;
-    fileEl.appendChild(contentDiv);
-
-    filesContainer.appendChild(fileEl);
-    currentAgentPlanFiles.push(fcp);
-  });
-
-  // Global actions
-  const approveAllBtn = document.getElementById("previewApproveAllBtn");
-  const rejectAllBtn = document.getElementById("previewRejectAllBtn");
-  if (approveAllBtn) {
-    approveAllBtn.onclick = () => {
-      preview.querySelectorAll(".preview-approve:not([disabled])").forEach((btn) => {
-        btn.click();
-      });
-    };
-  }
-  if (rejectAllBtn) {
-    rejectAllBtn.onclick = () => {
-      preview.querySelectorAll(".preview-reject:not([disabled])").forEach((btn) => {
-        btn.click();
-      });
-    };
-  }
-
-  // Expand agent panel for preview
-  if (agentPanel) {
-    agentPanel.classList.add("preview-phase");
-  }
-  preview.classList.remove("hidden");
-  preview.scrollIntoView({ behavior: "smooth", block: "start" });
-
-  // Approval timeout: remind user after 3 minutes of inactivity
-  if (window._approvalTimeout) clearTimeout(window._approvalTimeout);
-  window._approvalTimeout = setTimeout(() => {
-    const remaining = document.querySelectorAll(".preview-approve:not([disabled])").length;
-    if (remaining > 0 && agentPanel && !agentPanel.classList.contains("hidden")) {
-      appendAgentOutput(`⏰ 提醒: 还有 ${remaining} 个文件待审批，请点击「✅ 批准」或「❌ 拒绝」`, "info");
-    }
-  }, 180000);
-}
-
-function hideDiffPreview() {
-  const el = document.querySelector("#agentPreview");
-  if (el) el.classList.add("hidden");
-  if (agentPanel) agentPanel.classList.remove("preview-phase");
-  if (window._approvalTimeout) { clearTimeout(window._approvalTimeout); window._approvalTimeout = null; }
-}
-
-async function approveFile(path) {
-  if (!agentTaskId) return;
-  try {
-    const resp = await fetch("/api/agent/action", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ task_id: agentTaskId, action: "confirm", tool_call_id: path }),
-    });
-    const data = await resp.json().catch(() => ({}));
-
-    if (data.status === "applied") {
-      // All files approved — applying now
-      appendAgentOutput("⚙️ 正在应用所有已批准的修改...", "info");
-      if (data.files) {
-        for (const f of data.files) {
-          if (f.status === "applied") {
-            appendAgentOutput(`✅ 已应用: ${f.path}`, "success");
-          } else if (f.status === "skipped") {
-            appendAgentOutput(`⏭️ 跳过 (依赖未满足): ${f.path}`, "info");
-          } else if (f.status === "error") {
-            appendAgentOutput(`❌ 应用失败: ${f.path}`, "error");
-          } else if (f.status === "rejected") {
-            appendAgentOutput(`⊘ 未审批而跳过: ${f.path}`, "info");
-          }
-        }
-      }
-      appendAgentOutput("━━━━━━━━━━━━━━━━━━━━", "info");
-      appendAgentOutput(`🎉 ${data.result || "Plan applied"}`, "success");
-      hideDiffPreview();
-      hideApplyProgress();
-      updatePhaseBar("done");
-      setBusy(false);
-      // Reindex
-      try {
-        const reindexResp = await fetch("/api/reindex", { method: "POST" });
-        const reindexData = await reindexResp.json().catch(() => ({}));
-        if (reindexResp.ok) {
-          if (fileCount) fileCount.textContent = String(reindexData.file_count);
-          if (embeddingMode) embeddingMode.textContent = reindexData.embedding_mode === "onnx" ? "ONNX 语义" : "BM25";
-          try {
-            const treeData = typeof reindexData.tree === "string" ? JSON.parse(reindexData.tree) : reindexData.tree;
-            updateTreeView(treeData);
-          } catch (e) {}
-        }
-      } catch (e) {}
-    } else if (data.status === "approved") {
-      // Single file approved — count how many left
-      const remaining = document.querySelectorAll(".preview-approve:not([disabled])").length;
-      appendAgentOutput(`✅ 已批准: ${path}（还剩 ${remaining} 个文件待审批）`, "success");
-    }
-  } catch (e) {
-    appendAgentOutput(`❌ 审批失败: ${e.message}`, "error");
-  }
-}
-
-async function rejectFile(path) {
-  if (!agentTaskId) return;
-  try {
-    const resp = await fetch("/api/agent/action", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ task_id: agentTaskId, action: "reject", tool_call_id: path }),
-    });
-    const data = await resp.json().catch(() => ({}));
-    const remaining = document.querySelectorAll(".preview-approve:not([disabled])").length;
-    appendAgentOutput(`❌ 已拒绝: ${path}（还剩 ${remaining} 个文件待审批）`, "error");
-    // If all files are now decided (none left to approve), offer to apply
-    if (remaining === 0) {
-      const hasApproved = document.querySelectorAll(".preview-approve.approved").length > 0;
-      if (hasApproved) {
-        appendAgentOutput("💡 所有文件已处理完毕。已批准的文件将在下一步应用。", "info");
-        // Auto-apply after short delay
-        setTimeout(() => {
-          const approvedBtns = document.querySelectorAll(".preview-approve.approved");
-          if (approvedBtns.length > 0) {
-            // Trigger apply by re-approving the last approved file (server will detect all approved and apply)
-            const lastApprovedPath = currentAgentPlanFiles
-              .filter(f => f.user_approved)
-              .map(f => f.path)
-              .pop();
-            if (lastApprovedPath) approveFile(lastApprovedPath);
-          }
-        }, 1000);
-      } else {
-        appendAgentOutput("💡 所有文件已被拒绝，任务结束。", "info");
-        hideDiffPreview();
-        hideApplyProgress();
-        updatePhaseBar("done");
-        setBusy(false);
-      }
-    }
-  } catch (e) {
-    appendAgentOutput(`❌ 拒绝失败: ${e.message}`, "error");
-  }
-}
-
-function showApplyProgress(planData) {
-  const applying = document.querySelector("#agentApplying");
-  const stepsEl = document.getElementById("applySteps");
-  if (!applying || !stepsEl) return;
-
-  stepsEl.innerHTML = "";
-  const files = planData.files || [];
-
-  files.forEach((fcp) => {
-    const step = document.createElement("div");
-    step.className = "apply-step";
-    step.dataset.status = fcp.user_approved ? "pending" : "rejected";
-    step.innerHTML = `
-      <span class="apply-step-icon">${fcp.user_approved ? "○" : "✗"}</span>
-      <span>${escapeHtml(fcp.path)}</span>
-    `;
-    stepsEl.appendChild(step);
-  });
-
-  applying.classList.remove("hidden");
-}
-
-function updateApplyStep(filePath, status) {
-  const stepsEl = document.getElementById("applySteps");
-  if (!stepsEl) return;
-  stepsEl.querySelectorAll(".apply-step").forEach((step) => {
-    if (step.textContent.includes(filePath)) {
-      step.dataset.status = status;
-      const icon = step.querySelector(".apply-step-icon");
-      if (icon) {
-        icon.textContent = status === "completed" ? "✓" : status === "error" ? "✗" : "→";
-      }
-    }
-  });
-}
-
-function hideApplyProgress() {
-  const el = document.querySelector("#agentApplying");
-  if (el) el.classList.add("hidden");
-}
-
-// Enhanced handleAgentEvent for phase/diff preview events
-const _origHandleAgentEvent = handleAgentEvent;
-handleAgentEvent = function(data) {
-  switch (data.type) {
-    case "phase_change":
-      updatePhaseBar(data.phase);
-      if (data.message) appendAgentOutput(`📌 ${data.message}`, "info");
-      break;
-
-    case "analysis":
-      showAgentThinking(`任务类型: ${data.intent_type}\n描述: ${data.description}`);
-      setTimeout(hideAgentThinking, 2000);
-      break;
-
-    case "plan_generated": {
-      const pc = data.content != null ? String(data.content) : "";
-      // Strip think tags for display
-      const clean = pc.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-      showAgentThinking(`已生成修改计划:\n${clean.slice(0, 500)}${clean.length > 500 ? "..." : ""}`);
-      // Also show plan content directly in output so user can see details
-      if (clean) {
-        appendAgentOutput(`📋 计划内容:\n${clean.slice(0, 800)}`, "info");
-      }
-      break;
-    }
-
-    case "batch_tool_call": {
-      const count = data.count || 0;
-      const calls = data.calls || [];
-      appendAgentOutput(`📦 批量调用 ${count} 个工具`, "info");
-      calls.forEach(c => {
-        appendAgentOutput(`  └─ ${c.tool}(${JSON.stringify(c.args).slice(0, 100)})`, "info");
-      });
-      break;
-    }
-
-    case "reflection": {
-      if (data.reflection) {
-        appendAgentOutput(`🔍 审查: ${data.reflection.slice(0, 200)}`, "info");
-      }
-      break;
-    }
-
-    case "plan_data":
-      hideAgentThinking();
-      hideDiffPreview();
-      showApplyProgress(data);
-      renderDiffPreview(data);
-      break;
-
-    case "file_approved":
-      appendAgentOutput(`✅ 已批准: ${data.file}`, "success");
-      break;
-
-    case "file_rejected":
-      appendAgentOutput(`❌ 已拒绝: ${data.file}`, "error");
-      break;
-
-    case "apply_progress":
-      if (data.step !== undefined) {
-        const fileEl = document.querySelector(`#agentApplying .apply-step[data-step="${data.step}"]`);
-      }
-      if (data.file) {
-        updateApplyStep(data.file, data.status);
-      }
-      break;
-
-    case "warning":
-      appendAgentOutput(`⚠️ ${data.message}`, "error");
-      break;
-
-    case "paused":
-      appendAgentOutput(`⏸️ ${data.message || "Agent 已暂停"}`, "info");
-      updatePhaseBar("done");
-      setBusy(false);
-      break;
-
-    default:
-      _origHandleAgentEvent(data);
-  }
-};
+// NOTE: The original v1 handleAgentEvent + helper functions (addAgentStep,
+// updateAgentStep, appendAgentStepDetail, updateStepSummary, appendAgentOutput,
+// the v1 Todo system, updatePhaseBar, showPlanPreview, showAgentThinking, and
+// the diff approval functions: renderDiffPreview, hideDiffPreview, approveFile,
+// rejectFile, showApplyProgress, updateApplyStep, hideApplyProgress) plus the
+// v1.5 handleAgentEvent override were removed as dead code. The diff approval
+// UI is no longer supported by the backend. The single source of truth for
+// agent event rendering is the unified renderer defined below (formerly the v2
+// IIFE). `handleAgentEvent` is assigned there.
 
 /* ═══════════════════════════════════════════════════════════
    NEW: Frontend improvements for 100-point optimization
@@ -3021,23 +2650,105 @@ function makeFilePathsClickable(html) {
   );
 }
 
+/* ─── Resizable panels ────────────────────────────────────── */
+function initResizable() {
+  // Sidebar resize
+  const sidebarResize = document.getElementById("sidebarResize");
+  const sidebar = document.querySelector(".sidebar");
+  if (sidebarResize && sidebar) {
+    let startX, startWidth;
+    sidebarResize.addEventListener("mousedown", (e) => {
+      startX = e.clientX;
+      startWidth = sidebar.offsetWidth;
+      sidebarResize.classList.add("active");
+      const onMouseMove = (e) => {
+        const newWidth = Math.max(200, Math.min(500, startWidth + e.clientX - startX));
+        sidebar.style.width = newWidth + "px";
+        sidebar.style.minWidth = newWidth + "px";
+        document.documentElement.style.setProperty("--sidebar-width", newWidth + "px");
+      };
+      const onMouseUp = () => {
+        sidebarResize.classList.remove("active");
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+        localStorage.setItem("codelens-sidebar-width", sidebar.style.width);
+      };
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+    });
+    // Restore saved width
+    const savedWidth = localStorage.getItem("codelens-sidebar-width");
+    if (savedWidth) {
+      sidebar.style.width = savedWidth;
+      sidebar.style.minWidth = savedWidth;
+      document.documentElement.style.setProperty("--sidebar-width", savedWidth);
+    }
+  }
+
+  // Split resize (chat/editor)
+  const splitResize = document.getElementById("splitResize");
+  const chatPanel = document.querySelector(".chat-panel");
+  const editorArea = document.getElementById("editorArea");
+  if (splitResize && chatPanel) {
+    let startX, startChatWidth;
+    splitResize.addEventListener("mousedown", (e) => {
+      startX = e.clientX;
+      startChatWidth = chatPanel.offsetWidth;
+      splitResize.classList.add("active");
+      const onMouseMove = (e) => {
+        const mainSplit = document.querySelector(".main-split");
+        const totalWidth = mainSplit.offsetWidth;
+        const newChatWidth = Math.max(200, Math.min(totalWidth - 200, startChatWidth + e.clientX - startX));
+        chatPanel.style.flex = "0 0 " + newChatWidth + "px";
+      };
+      const onMouseUp = () => {
+        splitResize.classList.remove("active");
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+      };
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+    });
+  }
+}
+
 /* ─── #42 Terminal: command history navigation ────────────── */
 // Terminal handles history via the existing xterm API
 // We extend the terminal to support Up/Down for history
 
 /* ─── Initialize all new features ─────────────────────────── */
+// D5: toggle the mobile side-column drawer via its drag handle (::before).
+// The handle sits in the first 36px of the drawer; clicking toggles .expanded.
+function initMobileAgentDrawer() {
+  const sideCol = document.getElementById("agentSideCol");
+  if (!sideCol) return;
+  sideCol.addEventListener("click", (e) => {
+    // Only react to clicks in the top handle zone (the ::before pseudo area).
+    if (e.offsetY !== undefined && e.offsetY <= 36) {
+      sideCol.classList.toggle("expanded");
+    }
+  });
+}
+
 function initNewFeatures() {
   initCopyButtons();
   initTreeSearch();
   initPersistentSettings();
   initSystemThemePreference();
+  initResizable();
+  initMobileAgentDrawer();
 }
 
 // Initialize on load
 initNewFeatures();
 
-// Periodically refresh copy buttons for new code blocks
-setInterval(initCopyButtons, 3000);
+// Use MutationObserver to add copy buttons to new code blocks
+const _codeBlockObserver = new MutationObserver(() => {
+  initCopyButtons();
+});
+if (messages) {
+  _codeBlockObserver.observe(messages, { childList: true, subtree: true });
+}
 
 // Keyboard shortcut for shortcuts modal
 document.addEventListener('keydown', (e) => {
@@ -3050,4 +2761,975 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     if (toggleTerminalBtn) toggleTerminalBtn.click();
   }
+  // Ctrl+1/2/3/4 for mode switching
+  if ((e.ctrlKey || e.metaKey) && ['1', '2', '3', '4'].includes(e.key)) {
+    e.preventDefault();
+    const modes = ['ask', 'plan', 'craft', 'agent'];
+    const mode = modes[parseInt(e.key) - 1];
+    if (modeSelect && mode) {
+      modeSelect.value = mode;
+      modeSelect.dispatchEvent(new Event('change'));
+    }
+  }
+
+  // D4: Agent-view-only shortcuts.
+  // Esc → stop current task; Ctrl/Cmd+P → pause/resume.
+  // Only active when in agent mode and the input area is not focused.
+  if (currentMode === "agent") {
+    if (e.key === "Escape" && agentTaskId) {
+      // Don't hijack Esc from focused inputs/terminal (let them blur first).
+      const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : "";
+      const isInTerminal = e.target && e.target.closest && e.target.closest(".terminal-container, .xterm");
+      if (tag === "input" || tag === "textarea" || isInTerminal) {
+        // allow default (blur) — do nothing
+      } else if (agentStopBtn) {
+        e.preventDefault();
+        agentStopBtn.click();
+      }
+    }
+    // Ctrl/Cmd+P → toggle pause (override browser print only in agent mode)
+    if ((e.ctrlKey || e.metaKey) && (e.key === "p" || e.key === "P") && agentTaskId) {
+      e.preventDefault();
+      if (agentPauseBtn) agentPauseBtn.click();
+    }
+  }
 });
+
+// Scroll to bottom button
+const scrollBottomBtn = document.getElementById("scrollBottomBtn");
+if (messages && scrollBottomBtn) {
+  messages.addEventListener("scroll", () => {
+    const isNearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 100;
+    scrollBottomBtn.classList.toggle("hidden", isNearBottom);
+  });
+}
+
+
+/* ======================================================================
+   Unified Agent renderer (2026-06-14)
+   Renders events into #agentStream (cards) + #agentTodoList + phase bar.
+   This is the SINGLE implementation; the legacy v1/v1.5 renderers were removed.
+   ====================================================================== */
+
+// ---- helpers ----
+
+// I3: smart auto-scroll state. When user scrolls up to inspect history,
+// pause auto-scroll and show a "↓ 最新" button; resume when they jump back.
+let agentAutoScroll = true;
+
+// Append a card to the stream (or current subtask body). Returns the card.
+// collapsed: if true, the card starts with body hidden (tool calls default collapsed).
+function v2AppendCard(iconClass, title, bodyHtml, meta, collapsed) {
+  // I2: append into the current subtask body container if one is open,
+  // otherwise append directly to the stream.
+  const stream = document.getElementById("agentStream");
+  if (!stream) return null;
+  const target = currentSubtaskBody || stream;
+
+  const card = document.createElement("div");
+  card.className = "agent-card agent-card-enter";
+  if (collapsed) card.classList.add("collapsed");
+  const metaHtml = meta ? `<span class="agent-card-meta">${meta}</span>` : "";
+  const bodySection = bodyHtml
+    ? `<div class="agent-card-body">${bodyHtml}</div>`
+    : "";
+  card.innerHTML = `
+    <div class="agent-card-header">
+      <span class="agent-card-icon ${iconClass}">●</span>
+      <span class="agent-card-title">${title}</span>
+      ${metaHtml}
+    </div>
+    ${bodySection}
+  `;
+  target.appendChild(card);
+  // I3: only auto-scroll if user is following
+  if (agentAutoScroll) {
+    const mainCol = document.getElementById("agentMainCol");
+    if (mainCol) mainCol.scrollTop = mainCol.scrollHeight;
+  }
+  // I4: remove the enter class after animation so hover transitions work
+  setTimeout(() => card.classList.remove("agent-card-enter"), 250);
+  return card;
+}
+
+// Escape HTML
+function agentEsc(s) {
+  return String(s || "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+// Truncate + escape
+function agentTrunc(s, n) {
+  s = String(s || "");
+  return s.length > n ? agentEsc(s.slice(0, n)) + "…" : agentEsc(s);
+}
+
+// Render markdown via marked.js + highlight.js; falls back to escaped <pre>.
+function v2RenderMarkdown(md) {
+  if (typeof md !== "string") md = String(md || "");
+  if (window.marked && typeof window.marked.parse === "function") {
+    try {
+      // Configure once
+      if (!window._v2MarkedConfigured) {
+        window.marked.setOptions({
+          breaks: true,
+          gfm: true,
+          highlight: function (code, lang) {
+            if (window.hljs && lang && window.hljs.getLanguage(lang)) {
+              try { return window.hljs.highlight(code, { language: lang }).value; } catch (e) {}
+            }
+            if (window.hljs) {
+              try { return window.hljs.highlightAuto(code).value; } catch (e) {}
+            }
+            return agentEsc(code);
+          },
+        });
+        window._v2MarkedConfigured = true;
+      }
+      return window.marked.parse(md);
+    } catch (e) {
+      // fall through
+    }
+  }
+  // Fallback: escaped preformatted
+  return `<pre style="white-space:pre-wrap">${agentEsc(md)}</pre>`;
+}
+
+// ---- phase bar ----
+
+let agentCurrentPhase = null;
+const AGENT_PHASE_ORDER = ["routing", "decomposing", "executing", "aggregating", "done"];
+
+function setPhase(phase) {
+  const idx = AGENT_PHASE_ORDER.indexOf(phase);
+  if (idx < 0) return;
+  agentCurrentPhase = phase;
+  document.querySelectorAll(".phase-step").forEach(el => {
+    const p = el.getAttribute("data-phase");
+    const pIdx = AGENT_PHASE_ORDER.indexOf(p);
+    el.classList.toggle("active", p === phase);
+    el.classList.toggle("done", pIdx >= 0 && pIdx < idx);
+  });
+}
+
+// ---- todo list ----
+
+// id -> {el, status}
+const agentTodoItems = new Map();
+
+function ensureTodoListCleared() {
+  const list = document.getElementById("agentTodoList");
+  if (!list) return;
+  if (list.querySelector(".agent-todo-empty")) {
+    list.innerHTML = "";
+  }
+}
+
+function upsertTodo(id, desc, status, meta) {
+  const list = document.getElementById("agentTodoList");
+  const progress = document.getElementById("agentTodoProgress");
+  if (!list) return;
+  ensureTodoListCleared();
+
+  // Ensure status is a valid string
+  const safeStatus = String(status || "pending");
+
+  let item = agentTodoItems.get(id);
+  if (!item) {
+    const el = document.createElement("div");
+    el.className = "agent-todo-item status-" + safeStatus;
+    el.dataset.id = id;
+    el.innerHTML = `
+      <span class="agent-todo-icon"></span>
+      <span class="agent-todo-desc">${agentEsc(desc)}</span>
+      <span class="agent-todo-meta">${agentEsc(meta || "")}</span>
+    `;
+    list.appendChild(el);
+    item = { el, status: safeStatus };
+    agentTodoItems.set(id, item);
+  } else {
+    item.el.className = "agent-todo-item status-" + safeStatus;
+    if (desc) {
+      const descEl = item.el.querySelector(".agent-todo-desc");
+      if (descEl) descEl.textContent = String(desc);
+    }
+    if (meta !== undefined && meta !== null) {
+      const metaEl = item.el.querySelector(".agent-todo-meta");
+      if (metaEl) metaEl.textContent = String(meta);
+    }
+    item.status = safeStatus;
+  }
+
+  // Update progress
+  if (progress) {
+    const total = agentTodoItems.size;
+    const done = [...agentTodoItems.values()].filter(t => t.status === "done").length;
+    progress.textContent = `${done}/${total}`;
+  }
+}
+
+// ---- thinking ----
+
+let agentThinkingLen = 0;
+
+// Reset renderer state when a new task starts.
+function resetAgentRenderer() {
+  agentThinkingLen = 0;
+  agentTodoItems.clear();
+  resetToolGrouping();
+  // I2: clear subtask section state
+  currentSubtaskBody = null;
+  currentSubtaskHeader = null;
+  currentSubtaskToolCount = 0;
+  // I3: reset auto-scroll for the new task
+  agentAutoScroll = true;
+}
+
+window.addEventListener("agent:reset", () => {
+  resetAgentRenderer();
+});
+
+// I3: Smart scroll-following on #agentMainCol.
+// When the user scrolls up to inspect history, pause auto-scroll and show
+// the "↓ 最新" button; resume when they scroll back near the bottom.
+(function initSmartScroll() {
+  const mainCol = document.getElementById("agentMainCol");
+  const scrollBtn = document.getElementById("agentScrollBottomBtn");
+  if (!mainCol || !scrollBtn) return;
+
+  mainCol.addEventListener("scroll", () => {
+    const distFromBottom = mainCol.scrollHeight - mainCol.scrollTop - mainCol.clientHeight;
+    if (distFromBottom < 80) {
+      agentAutoScroll = true;
+      scrollBtn.classList.add("hidden");
+    } else {
+      agentAutoScroll = false;
+      scrollBtn.classList.remove("hidden");
+    }
+  });
+
+  scrollBtn.addEventListener("click", () => {
+    agentAutoScroll = true;
+    mainCol.scrollTop = mainCol.scrollHeight;
+    scrollBtn.classList.add("hidden");
+  });
+})();
+
+// ---- main event handler ----
+
+function handleAgentEvent(data) {
+  const t = data.type;
+
+  // Reset heartbeat on any event (D1)
+  bumpAgentHeartbeat();
+
+  // Phase progression
+  if (t === "phase_change") {
+    const phase = data.phase;
+    setPhase(phase);
+    setAgentStatus("running", null);
+    // Don't emit a card for phase_change — the phase bar already shows it
+    return;
+  }
+
+  // Analysis: show route badge + summary, and seed Todo list for simple routes
+  if (t === "analysis") {
+    const badge = document.getElementById("agentRouteBadge");
+    if (badge) {
+      badge.className = `agent-route-badge route-${data.intent_type || ""}`;
+      const names = { simple: "SIMPLE", multi_step: "MULTI-STEP", map_reduce: "MAP-REDUCE" };
+      badge.textContent = names[data.intent_type] || (data.intent_type || "").toUpperCase();
+    }
+    v2AppendCard(
+      "info",
+      `任务路由: ${data.intent_type || "?"}`,
+      `<div>${agentEsc(data.description || "")}</div>`,
+      `置信度 ${data.confidence || "?"}`
+    );
+    // For simple routes, the backend won't emit plan_generated.
+    // Seed the Todo list with a single virtual item representing the task.
+    if (data.intent_type === "simple") {
+      const qEl = document.getElementById("questionInput");
+      const query = qEl ? qEl.value : "任务";
+      upsertTodo("virtual-root", query || "执行任务", "running", "simple");
+    }
+    return;
+  }
+
+  // Plan generated: populate todo list from subtasks
+  if (t === "plan_generated") {
+    const subtasks = data.subtasks || [];
+    v2AppendCard(
+      "subtask",
+      `生成计划: ${subtasks.length} 个子任务`,
+      null,
+      `类型 ${data.kind || "?"}`
+    );
+    subtasks.forEach(st => {
+      upsertTodo(st.id, st.description || st.id, "pending", st.kind || "");
+    });
+    return;
+  }
+
+  // Subtask start: mark todo as running + open a new subtask section (I2)
+  if (t === "subtask_start") {
+    upsertTodo(data.id, data.description || data.id, "running", data.kind || "");
+    openSubtaskSection(data.id, data.description || data.id, data.index, data.total);
+    return;
+  }
+
+  // Subtask done: update section status + mark todo as done/partial/failed (I2)
+  if (t === "subtask_done") {
+    const st = data.status || "done";
+    // Raw summary for textContent (used in upsertTodo meta)
+    const rawSummary = data.summary ? String(data.summary).slice(0, 60) : "";
+    const findings = data.findings_count ? ` · ${data.findings_count} 个发现` : "";
+    // Escaped summary for innerHTML (used in closeSubtaskSection)
+    const escSummary = data.summary ? agentTrunc(data.summary, 300) : "";
+    upsertTodo(data.id, null, st === "success" ? "done" : st, rawSummary + findings);
+    closeSubtaskSection(data.id, st, escSummary);
+    return;
+  }
+
+  // Iteration start: insert a separator line into thinking content (D3)
+  if (t === "iteration_start") {
+    const el = document.getElementById("thinkingContent");
+    if (el) {
+      const iter = data.iteration || "?";
+      const sep = `\n\n── 迭代 ${iter} ──\n\n`;
+      el.textContent += sep;
+      agentThinkingLen += sep.length;
+      const lenEl = document.getElementById("thinkingLen");
+      if (lenEl) lenEl.textContent = `${agentThinkingLen} 字符`;
+      el.scrollTop = el.scrollHeight;
+    }
+    return;
+  }
+
+  // Thinking chunks: stream into collapsible block
+  if (t === "thinking_chunk") {
+    const el = document.getElementById("thinkingContent");
+    const lenEl = document.getElementById("thinkingLen");
+    const block = document.getElementById("agentThinking");
+    if (el && data.content) {
+      const wasEmpty = agentThinkingLen === 0;
+      el.textContent += data.content;
+      agentThinkingLen += data.content.length;
+      if (lenEl) lenEl.textContent = `${agentThinkingLen} 字符`;
+      // Auto-expand on first chunk only (so user can manually collapse later)
+      if (block && wasEmpty) {
+        block.classList.remove("collapsed");
+      }
+      // Auto-scroll within thinking content
+      el.scrollTop = el.scrollHeight;
+    }
+    return;
+  }
+
+  // LLM response: collapse thinking + show markdown card (default collapsed, I5)
+  if (t === "llm_response") {
+    const block = document.getElementById("agentThinking");
+    if (block) block.classList.add("collapsed");
+    const raw = String(data.content || "");
+    let clean = raw.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+    clean = clean.replace(/\{"tool"\s*:\s*"[^"]+"\s*,\s*"args"\s*:\s*\{[\s\S]*?\}\s*\}/g, "").trim();
+    if (clean && clean.length > 20) {
+      const html = v2RenderMarkdown(clean);
+      // Title shows a short preview; full content in collapsed body
+      const preview = clean.slice(0, 50).replace(/\n/g, " ") + (clean.length > 50 ? "…" : "");
+      const card = v2AppendCard("info", `💬 ${preview}`, `<div class="markdown">${html}</div>`, `${clean.length} 字符`, true);
+      if (card) {
+        const header = card.querySelector(".agent-card-header");
+        if (header) {
+          header.classList.add("clickable");
+          header.addEventListener("click", () => card.classList.toggle("collapsed"));
+        }
+      }
+    }
+    return;
+  }
+
+  // Tool call batch — silent (I5): the subtask section header already shows
+  // the tool count; emitting a separate card would be redundant noise.
+  if (t === "tool_call_batch") {
+    return;
+  }
+
+  // Tool call — try to fold into a repeated-tool group (D2)
+  if (t === "tool_call") {
+    const args = data.args || {};
+    const argsStr = Object.entries(args).map(([k, v]) => `${k}=${agentTrunc(v, 60)}`).join(", ");
+    appendToolCallCard(data.tool || "?", argsStr);
+    return;
+  }
+
+  // Tool result (collapsible body) — also folds into repeated-tool group (D2)
+  if (t === "tool_result") {
+    const r = String(data.result || "");
+    appendToolResultCard(data.tool || "?", r);
+    return;
+  }
+
+  // Tool error
+  if (t === "tool_error") {
+    v2AppendCard("error", `✗ ${data.tool || "?"} 失败`, `<div>${agentEsc(data.error || "")}</div>`, "");
+    return;
+  }
+
+  // Warning / info (skip if no content)
+  if (t === "warning") {
+    if (data.message) v2AppendCard("warn", `⚠ ${data.message}`, null, "");
+    return;
+  }
+  if (t === "info") {
+    if (data.message) v2AppendCard("info", data.message, null, "");
+    return;
+  }
+
+  // Final done: render into #agentOutput + close out any virtual todo
+  if (t === "done") {
+    // Close virtual-root todo (simple routes)
+    if (agentTodoItems.has("virtual-root")) {
+      upsertTodo("virtual-root", null, "done", "完成");
+    }
+    const outputEl = document.getElementById("agentOutput");
+    const content = document.getElementById("agentOutputContent");
+    const sideCol = document.getElementById("agentSideCol");
+    const body = document.querySelector(".agent-body");
+    // Hide the side column to give full width to the result
+    if (sideCol && body) {
+      sideCol.style.display = "none";
+      body.style.gridTemplateColumns = "1fr";
+    }
+    // Collapse all stream cards to reduce noise around the final result
+    const stream = document.getElementById("agentStream");
+    if (stream) {
+      stream.querySelectorAll(".agent-card").forEach(c => c.classList.add("collapsed"));
+      stream.querySelectorAll(".subtask-section").forEach(s => s.classList.add("collapsed"));
+    }
+    // Collapse thinking block
+    const thinkingBlock = document.getElementById("agentThinking");
+    if (thinkingBlock) thinkingBlock.classList.add("collapsed");
+    if (outputEl && content) {
+      outputEl.classList.remove("hidden");
+      // Full markdown render via marked.js + highlight.js
+      content.innerHTML = v2RenderMarkdown(data.result || "");
+      // Flash animation to draw attention
+      outputEl.classList.remove("just-arrived");
+      // Force reflow so animation restarts
+      void outputEl.offsetWidth;
+      outputEl.classList.add("just-arrived");
+      // Scroll output into view
+      setTimeout(() => {
+        outputEl.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 100);
+    }
+    setPhase("done");
+    setAgentStatus("done", null);
+    stopAgentHeartbeat();
+    // Reindex files after task completes (file tree may have changed)
+    refreshFileTree();
+    // Wire copy button
+    const copyBtn = document.getElementById("copyResultBtn");
+    if (copyBtn) {
+      copyBtn.onclick = () => {
+        navigator.clipboard.writeText(data.result || "").catch(() => {});
+        copyBtn.title = "已复制";
+      };
+    }
+    // Refresh history list (E3)
+    if (typeof loadAgentHistory === "function") loadAgentHistory();
+    return;
+  }
+
+  // Error
+  if (t === "error") {
+    v2AppendCard("error", "错误", `<div>${agentEsc(data.message || "")}</div>`, "");
+    setAgentStatus("failed", null);
+    stopAgentHeartbeat();
+    return;
+  }
+
+  // Status / reflection / plan_data / batch_tool_call: silently ignore
+  if (t === "status" || t === "reflection" || t === "plan_data" || t === "batch_tool_call") {
+    return;
+  }
+
+  // Fallback: unknown event
+  // console.log("[agent] unhandled event:", t, data);
+}
+
+// ---- D1: status pill / heartbeat ----
+
+let agentHeartbeatTimer = null;
+let agentHeartbeatStart = 0;
+let agentLastEventTime = 0;
+
+function setAgentStatus(state, elapsedSec) {
+  const pill = document.getElementById("agentStatusPill");
+  if (!pill) return;
+  pill.classList.remove("state-running", "state-paused", "state-done", "state-failed", "state-stalled");
+  if (state === "running") {
+    pill.classList.add("state-running");
+    pill.textContent = elapsedSec != null
+      ? `运行中 · ${formatDuration(elapsedSec)}`
+      : "运行中";
+  } else if (state === "paused") {
+    pill.classList.add("state-paused");
+    pill.textContent = "已暂停";
+  } else if (state === "done") {
+    pill.classList.add("state-done");
+    pill.textContent = elapsedSec != null
+      ? `✓ 完成 · ${formatDuration(elapsedSec)}`
+      : "✓ 完成";
+  } else if (state === "failed") {
+    pill.classList.add("state-failed");
+    pill.textContent = "失败";
+  } else if (state === "stalled") {
+    pill.classList.add("state-stalled");
+    pill.textContent = "似乎卡住了…";
+  }
+}
+
+function formatDuration(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}m${s.toString().padStart(2, "0")}s`;
+}
+
+function bumpAgentHeartbeat() {
+  agentLastEventTime = Date.now();
+}
+
+function startAgentHeartbeat() {
+  stopAgentHeartbeat();
+  agentHeartbeatStart = Date.now();
+  agentLastEventTime = Date.now();
+  setAgentStatus("running", 0);
+  agentHeartbeatTimer = setInterval(() => {
+    const elapsed = (Date.now() - agentHeartbeatStart) / 1000;
+    const sinceLastEvent = (Date.now() - agentLastEventTime) / 1000;
+    if (agentPaused) {
+      setAgentStatus("paused", null);
+    } else if (sinceLastEvent > 30) {
+      setAgentStatus("stalled", elapsed);
+    } else {
+      setAgentStatus("running", elapsed);
+    }
+  }, 1000);
+}
+
+function stopAgentHeartbeat() {
+  if (agentHeartbeatTimer) {
+    clearInterval(agentHeartbeatTimer);
+    agentHeartbeatTimer = null;
+  }
+}
+
+// ---- D2: tool card grouping ----
+
+// Track the last tool-name we rendered, to fold consecutive same-tool calls.
+let lastToolName = null;
+let lastToolGroupCard = null;     // collapsed group card for repeats
+let lastToolGroupCount = 0;
+
+function resetToolGrouping() {
+  lastToolName = null;
+  lastToolGroupCard = null;
+  lastToolGroupCount = 0;
+}
+
+// I2: Subtask section management.
+// Each subtask gets a header (with status icon) + a body container that
+// holds its tool cards. currentSubtaskBody is where v2AppendCard routes cards.
+let currentSubtaskBody = null;
+let currentSubtaskHeader = null;
+let currentSubtaskToolCount = 0;
+
+function openSubtaskSection(id, title, index, total) {
+  resetToolGrouping();
+  const stream = document.getElementById("agentStream");
+  if (!stream) return;
+
+  // Close any previously open section
+  currentSubtaskBody = null;
+
+  // Header with status icon + title + tool counter
+  const header = document.createElement("div");
+  header.className = "agent-subtask-header status-running";
+  header.dataset.id = id;
+  const indexLabel = total ? `<span class="agent-subtask-index">${index || ""}/${total}</span>` : "";
+  header.innerHTML = `
+    <span class="agent-subtask-status-icon">○</span>
+    ${indexLabel}
+    <span class="agent-subtask-title">${agentEsc(title)}</span>
+    <span class="agent-subtask-tool-count"></span>
+  `;
+  stream.appendChild(header);
+
+  // Body container for this subtask's cards
+  const body = document.createElement("div");
+  body.className = "agent-subtask-body";
+  stream.appendChild(body);
+
+  currentSubtaskHeader = header;
+  currentSubtaskBody = body;
+  currentSubtaskToolCount = 0;
+
+  if (agentAutoScroll) {
+    const mainCol = document.getElementById("agentMainCol");
+    if (mainCol) mainCol.scrollTop = mainCol.scrollHeight;
+  }
+}
+
+function bumpSubtaskToolCount() {
+  if (!currentSubtaskHeader) return;
+  currentSubtaskToolCount += 1;
+  const el = currentSubtaskHeader.querySelector(".agent-subtask-tool-count");
+  if (el) el.textContent = `${currentSubtaskToolCount} 个工具`;
+}
+
+function closeSubtaskSection(id, status, summary) {
+  if (!currentSubtaskHeader) return;
+  // Map backend status to display
+  const statusMap = {
+    success: { cls: "status-done", icon: "✓" },
+    done: { cls: "status-done", icon: "✓" },
+    partial: { cls: "status-partial", icon: "△" },
+    failed: { cls: "status-failed", icon: "✗" },
+  };
+  const s = statusMap[status] || statusMap.done;
+  currentSubtaskHeader.classList.remove("status-running");
+  currentSubtaskHeader.classList.add(s.cls);
+  const iconEl = currentSubtaskHeader.querySelector(".agent-subtask-status-icon");
+  if (iconEl) iconEl.textContent = s.icon;
+
+  // If there's a summary, add a result card at the end of the section body
+  if (summary && currentSubtaskBody) {
+    const card = document.createElement("div");
+    card.className = "agent-card agent-card-enter agent-subtask-summary";
+    card.innerHTML = `
+      <div class="agent-card-header">
+        <span class="agent-card-icon success">●</span>
+        <span class="agent-card-title">✓ 结果摘要</span>
+      </div>
+      <div class="agent-card-body"><div>${summary}</div></div>
+    `;
+    currentSubtaskBody.appendChild(card);
+    setTimeout(() => card.classList.remove("agent-card-enter"), 250);
+  }
+
+  // Close this section so subsequent cards go to the stream root
+  currentSubtaskBody = null;
+  currentSubtaskHeader = null;
+
+  if (agentAutoScroll) {
+    const mainCol = document.getElementById("agentMainCol");
+    if (mainCol) mainCol.scrollTop = mainCol.scrollHeight;
+  }
+}
+
+// Render a tool_call card (default collapsed), folding consecutive same-tool calls.
+function appendToolCallCard(toolName, argsStr) {
+  bumpSubtaskToolCount();
+  if (toolName === lastToolName && lastToolGroupCard) {
+    // Increment count in existing group card
+    lastToolGroupCount += 1;
+    updateToolGroupCardMeta();
+    // Stash detail as a hidden row inside the group body
+    appendToolGroupDetail(`🔧 ${toolName}`, argsStr);
+    return;
+  }
+  // New tool (or no group yet): start fresh — default collapsed (I1)
+  lastToolName = toolName;
+  lastToolGroupCount = 1;
+  const card = v2AppendCard("tool", `🔧 ${toolName}`, null, argsStr, true);
+  lastToolGroupCard = card;
+  // Prepare a hidden body container for folded details
+  const body = document.createElement("div");
+  body.className = "agent-tool-group-body hidden";
+  card.appendChild(body);
+  // Click header to toggle the group body
+  const header = card.querySelector(".agent-card-header");
+  if (header) {
+    header.classList.add("clickable");
+    header.addEventListener("click", () => body.classList.toggle("hidden"));
+  }
+}
+
+function appendToolGroupDetail(title, meta) {
+  if (!lastToolGroupCard) return;
+  const body = lastToolGroupCard.querySelector(".agent-tool-group-body");
+  if (!body) return;
+  const row = document.createElement("div");
+  row.className = "agent-tool-group-row";
+  row.textContent = `${title}  ·  ${meta}`;
+  body.appendChild(row);
+}
+
+function updateToolGroupCardMeta() {
+  if (!lastToolGroupCard) return;
+  const metaEl = lastToolGroupCard.querySelector(".agent-card-meta");
+  if (metaEl) metaEl.textContent = `× ${lastToolGroupCount} 次`;
+}
+
+// Render a tool_result: attach to current group body (I1 — no separate card).
+function appendToolResultCard(toolName, result) {
+  // If this result matches the current tool group, fold it in.
+  if (toolName === lastToolName && lastToolGroupCard) {
+    appendToolGroupDetail(`✓ ${toolName}`, agentTrunc(result, 80));
+    return;
+  }
+  // Standalone result (no matching tool group) — collapsible card, default collapsed.
+  const card = v2AppendCard(
+    "success",
+    `✓ ${toolName}`,
+    `<div>${agentTrunc(result, 600)}</div>`,
+    `${result.length} 字符`,
+    true
+  );
+  if (card) {
+    const header = card.querySelector(".agent-card-header");
+    if (header) {
+      header.classList.add("clickable");
+      header.addEventListener("click", () => card.classList.toggle("collapsed"));
+    }
+  }
+}
+
+// ---- file tree refresh helper ----
+
+function refreshFileTree() {
+  fetch("/api/reindex", { method: "POST" })
+    .then(r => r.json().catch(() => ({})))
+    .then(d => {
+      if (d.file_count !== undefined) {
+        if (typeof fileCount !== "undefined" && fileCount) fileCount.textContent = String(d.file_count);
+        if (typeof embeddingMode !== "undefined" && embeddingMode) {
+          embeddingMode.textContent = d.embedding_mode === "onnx" ? "ONNX 语义" : "BM25";
+        }
+        try {
+          const treeData = typeof d.tree === "string" ? JSON.parse(d.tree) : d.tree;
+          if (typeof updateTreeView === "function") updateTreeView(treeData);
+        } catch (e) {}
+      }
+    })
+    .catch(() => {});
+}
+
+/* ======================================================================
+   E1-E3: Task history panel
+   Loads /api/agent/tasks and renders clickable history items in the
+   side column. Click an item to view its result; delete button to remove.
+   ====================================================================== */
+
+// Format a unix timestamp (seconds) into a relative-time string.
+function formatRelativeTime(ts) {
+  if (!ts) return "";
+  const now = Date.now() / 1000;
+  const diff = Math.max(0, now - ts);
+  if (diff < 60) return "刚刚";
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+  return `${Math.floor(diff / 86400)} 天前`;
+}
+
+const AGENT_STATUS_LABELS = {
+  pending: "等待",
+  running: "运行中",
+  paused: "暂停",
+  stopped: "已停止",
+  completed: "完成",
+  failed: "失败",
+};
+
+function statusToClass(status) {
+  const map = {
+    completed: "done",
+    running: "running",
+    paused: "paused",
+    stopped: "failed",
+    failed: "failed",
+    pending: "pending",
+  };
+  return map[status] || "pending";
+}
+
+// Render the history list from a tasks array.
+function renderAgentHistory(tasks) {
+  const list = document.getElementById("agentHistoryList");
+  if (!list) return;
+  if (!tasks || tasks.length === 0) {
+    list.innerHTML = '<div class="agent-history-empty">暂无历史任务</div>';
+    return;
+  }
+  // Newest first
+  const sorted = [...tasks].sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+  list.innerHTML = "";
+  sorted.forEach(t => {
+    const item = document.createElement("div");
+    item.className = "agent-history-item";
+    item.dataset.taskId = t.task_id;
+    const statusLabel = AGENT_STATUS_LABELS[t.status] || t.status;
+    const statusCls = statusToClass(t.status);
+    const preview = t.result_preview ? agentEsc(t.result_preview) : "";
+    item.innerHTML = `
+      <div class="agent-history-item-main">
+        <div class="agent-history-item-query">${agentEsc(t.user_query || "(无描述)")}</div>
+        <div class="agent-history-item-meta">
+          <span class="subtask-status ${statusCls}">${statusLabel}</span>
+          <span class="agent-history-item-time">${formatRelativeTime(t.created_at)}</span>
+          ${t.step_count ? `<span class="agent-history-item-steps">${t.step_count} 步</span>` : ""}
+        </div>
+        ${preview ? `<div class="agent-history-item-preview">${preview}</div>` : ""}
+      </div>
+      <button class="agent-history-item-del icon-btn" title="删除">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+        </svg>
+      </button>
+    `;
+    // Click main area → view result
+    item.querySelector(".agent-history-item-main").addEventListener("click", () => {
+      viewTaskResult(t.task_id);
+    });
+    // Click delete button → remove
+    const delBtn = item.querySelector(".agent-history-item-del");
+    if (delBtn) {
+      delBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        deleteTaskFromHistory(t.task_id);
+      });
+    }
+    list.appendChild(item);
+  });
+}
+
+// Fetch a task's full result and render it into #agentOutput.
+async function viewTaskResult(taskId) {
+  try {
+    const resp = await fetch(`/api/agent/status/${taskId}`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const outputEl = document.getElementById("agentOutput");
+    const content = document.getElementById("agentOutputContent");
+    if (!outputEl || !content) return;
+    outputEl.classList.remove("hidden");
+    const resultText = data.result || "(无结果)";
+    content.innerHTML = v2RenderMarkdown(resultText);
+    outputEl.classList.remove("just-arrived");
+    void outputEl.offsetWidth;
+    outputEl.classList.add("just-arrived");
+    setTimeout(() => outputEl.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
+    // Highlight the selected history item
+    document.querySelectorAll(".agent-history-item").forEach(el => el.classList.remove("selected"));
+    const sel = document.querySelector(`.agent-history-item[data-task-id="${taskId}"]`);
+    if (sel) sel.classList.add("selected");
+  } catch (e) {
+    console.error("viewTaskResult failed:", e);
+  }
+}
+
+// Delete a task from history (backend + UI).
+async function deleteTaskFromHistory(taskId) {
+  try {
+    const resp = await fetch(`/api/agent/tasks/${taskId}`, { method: "DELETE" });
+    if (resp.ok) {
+      loadAgentHistory();
+    }
+  } catch (e) {
+    console.error("deleteTaskFromHistory failed:", e);
+  }
+}
+
+// Load history from backend and render.
+function loadAgentHistory() {
+  fetch("/api/agent/tasks")
+    .then(r => r.json().catch(() => ({ tasks: [] })))
+    .then(d => renderAgentHistory(d.tasks || []))
+    .catch(() => {});
+}
+
+// Wire up the refresh button (E3).
+(function initHistoryRefresh() {
+  const btn = document.getElementById("agentHistoryRefreshBtn");
+  if (btn) {
+    btn.addEventListener("click", () => loadAgentHistory());
+  }
+})();
+
+/* ======================================================================
+   H1/H2: Thinking expand toggle + Fullscreen overlay
+   ====================================================================== */
+
+// H1: Toggle the thinking block between normal (60vh) and expanded (85vh).
+// Also ensures the block is visible (removes 'collapsed') when expanding.
+(function initThinkingExpand() {
+  const btn = document.getElementById("thinkingExpandBtn");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    const block = document.getElementById("agentThinking");
+    if (!block) return;
+    // Ensure block is visible before expanding
+    const wasCollapsed = block.classList.contains("collapsed");
+    if (wasCollapsed) {
+      block.classList.remove("collapsed");
+    }
+    block.classList.toggle("expanded");
+    const isExpanded = block.classList.contains("expanded");
+    btn.title = isExpanded ? "恢复默认大小" : "放大查看";
+    // Update icon: maximize ↔ minimize
+    btn.innerHTML = isExpanded
+      ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="M14 10l7-7"/><path d="M3 21l7-7"/></svg>'
+      : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>';
+  });
+})();
+
+// H2: Fullscreen overlay — shows report or thinking content in a full-panel view.
+function openAgentFullscreen(title, bodyHtml, bodyClass) {
+  const overlay = document.getElementById("agentFullscreenOverlay");
+  const titleEl = document.getElementById("agentFullscreenTitle");
+  const bodyEl = document.getElementById("agentFullscreenBody");
+  if (!overlay || !bodyEl) return;
+  if (titleEl) titleEl.textContent = title;
+  bodyEl.className = "agent-fullscreen-body" + (bodyClass ? " " + bodyClass : "");
+  bodyEl.innerHTML = bodyHtml;
+  overlay.classList.remove("hidden");
+  bodyEl.scrollTop = 0;
+}
+
+function closeAgentFullscreen() {
+  const overlay = document.getElementById("agentFullscreenOverlay");
+  if (overlay) overlay.classList.add("hidden");
+}
+
+(function initFullscreenControls() {
+  // Report fullscreen button
+  const reportBtn = document.getElementById("outputFullscreenBtn");
+  if (reportBtn) {
+    reportBtn.addEventListener("click", () => {
+      const content = document.getElementById("agentOutputContent");
+      if (!content) return;
+      openAgentFullscreen("最终报告", content.innerHTML, "markdown");
+    });
+  }
+  // Close button
+  const closeBtn = document.getElementById("agentFullscreenCloseBtn");
+  if (closeBtn) {
+    closeBtn.addEventListener("click", closeAgentFullscreen);
+  }
+  // Esc to close fullscreen (only when overlay is visible)
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      const overlay = document.getElementById("agentFullscreenOverlay");
+      if (overlay && !overlay.classList.contains("hidden")) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeAgentFullscreen();
+      }
+    }
+  });
+})();

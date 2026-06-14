@@ -11,6 +11,7 @@ from typing import AsyncIterator
 
 from models import AskRequest
 from services.search import select_context, render_context
+from config import SYSTEM_PROMPTS
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -33,6 +34,7 @@ async def _stream_llama(
     context_info: list[dict],
     max_tokens: int = DEFAULT_MAX_TOKENS,
     temperature: float = DEFAULT_TEMPERATURE,
+    mode: str = "ask",
 ) -> AsyncIterator[str]:
     """
     Stream LLM response in SSE format matching frontend expectations:
@@ -44,28 +46,53 @@ async def _stream_llama(
     if context_info:
         yield _sse({"type": "sources", "sources": context_info})
 
+    # Use mode-specific system prompt
+    system_prompt = SYSTEM_PROMPTS.get(mode, SYSTEM_PROMPTS.get("ask", "You are a professional code assistant."))
+    
+    optimized_max_tokens = min(max_tokens, 4096)
+
+    # 构建更简洁的提示词
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": query}
+    ]
+
+    # 使用completion端点（比chat端点更快）
+    # 将消息转换为单个prompt
+    prompt_text = ""
+    for msg in messages:
+        if msg["role"] == "system":
+            prompt_text += f"System: {msg['content']}\n\n"
+        elif msg["role"] == "user":
+            prompt_text += f"User: {msg['content']}\n\n"
+    prompt_text += "Assistant:"
+
     payload = {
         "model": "qwen3.5-9b",
-        "messages": [
-            {"role": "system", "content": "You are a professional code assistant."},
-            {"role": "user", "content": query}
-        ],
-        "max_tokens": max_tokens,
+        "prompt": prompt_text,
+        "max_tokens": optimized_max_tokens,
         "temperature": temperature,
         "stream": True,
+        "cache_prompt": True,
+        "top_p": 0.9,
+        "repeat_penalty": 1.1,
+        "stop": ["User:", "System:"],
     }
 
     try:
         from app import get_http_client
         client = get_http_client()
         all_content = []
-        async with client.stream("POST", LLAMA_URL, json=payload) as response:
+        done_sent = False
+
+        completion_url = LLAMA_URL.replace("/v1/chat/completions", "/completion")
+
+        async with client.stream("POST", completion_url, json=payload) as response:
             async with asyncio.timeout(DEFAULT_TIMEOUT):
                 sse_tail = ""
                 async for chunk in response.aiter_text(chunk_size=4096):
                     if not chunk:
                         continue
-                    # Buffer across chunks: never strip the whole chunk (breaks mid-line SSE).
                     sse_tail += chunk.replace("\r\n", "\n")
                     while "\n" in sse_tail:
                         line, sse_tail = sse_tail.split("\n", 1)
@@ -81,22 +108,36 @@ async def _stream_llama(
                         except json.JSONDecodeError:
                             continue
 
-                        choices = data.get("choices", [])
-                        if not choices:
-                            continue
-
-                        delta = choices[0].get("delta", {})
-                        content = delta.get("content", "")
-                        finish_reason = choices[0].get("finish_reason")
+                        content = data.get("content", "")
+                        stop = data.get("stop", False)
 
                         if content:
                             all_content.append(content)
                             yield _sse({"type": "delta", "content": content})
 
-                        if finish_reason is not None:
+                        if stop:
                             answer = "".join(all_content)
-                            yield _sse({"type": "done", "answer": answer, "finish_reason": finish_reason})
+                            yield _sse({"type": "done", "answer": answer, "finish_reason": "stop"})
+                            done_sent = True
                             return
+
+                if sse_tail.strip():
+                    line = sse_tail.strip()
+                    if line.startswith("data: "):
+                        line = line[6:]
+                        if line != "[DONE]":
+                            try:
+                                data = json.loads(line)
+                                content = data.get("content", "")
+                                if content:
+                                    all_content.append(content)
+                                    yield _sse({"type": "delta", "content": content})
+                            except json.JSONDecodeError:
+                                pass
+
+        if not done_sent:
+            answer = "".join(all_content)
+            yield _sse({"type": "done", "answer": answer, "finish_reason": "stop"})
 
     except asyncio.TimeoutError:
         logger.error(f"LLM request timeout: {DEFAULT_TIMEOUT}s")
@@ -138,6 +179,8 @@ async def ask(req: AskRequest):
         if history_str:
             context_question = f"{history_str}\n\nCurrent question: {question}"
 
+        optimized_limit = min(req.context_limit, 42000) if req.context_limit else 42000
+        
         selected = select_context(
             question=context_question,
             files=state.files,
@@ -146,7 +189,7 @@ async def ask(req: AskRequest):
             embedding_ready=state.embedding_ready,
             session=ort_sess,
             tokenizer=ort_tok,
-            context_limit=req.context_limit,
+            context_limit=optimized_limit,
             dep_graph=state.dep_graph,
         )
         context = render_context(selected)
@@ -177,7 +220,7 @@ async def ask(req: AskRequest):
             logger.warning(f"Craft apply failed: {e}")
 
     return StreamingResponse(
-        _stream_llama(full_query, context_sources, max_tokens, temperature),
+        _stream_llama(full_query, context_sources, max_tokens, temperature, req.mode),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

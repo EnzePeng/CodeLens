@@ -199,6 +199,7 @@ def preview_diff(
     old_lines = old_content.splitlines()
     new_lines = new_content.splitlines()
     
+    matcher = difflib.SequenceMatcher(None, old_lines, new_lines)
     diff_lines = []
     added = 0
     removed = 0

@@ -6,12 +6,72 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from dataclasses import dataclass
 
 # Application directory
 APP_DIR = Path(__file__).resolve().parent
 
 # LLM endpoint
 LLAMA_URL = os.environ.get("LLAMA_URL", "http://127.0.0.1:8080/v1/chat/completions")
+
+
+@dataclass
+class ModelConfig:
+    """模型配置"""
+    name: str
+    file: str
+    endpoint: str
+    context_size: int
+    purpose: str  # main, fast, embedding
+    description: str
+
+
+# 模型配置 - 使用 Qwen3.5-9B（Q4_K_M 量化）
+MODELS = {
+    "main": ModelConfig(
+        name="Qwen3.5-9B",
+        file="Qwen3.5-9B.Q4_K_M.gguf",
+        endpoint="http://127.0.0.1:8080/v1/chat/completions",
+        context_size=32768,
+        purpose="main",
+        description="主推理模型 - Agent/Ask/Plan/Craft 全模式共用"
+    ),
+    "fast": ModelConfig(
+        name="Qwen3.5-9B",
+        file="Qwen3.5-9B.Q4_K_M.gguf",
+        endpoint="http://127.0.0.1:8080/v1/chat/completions",
+        context_size=32768,
+        purpose="fast",
+        description="快速模型 - 与主模型相同（单模型部署）"
+    ),
+    "fallback": ModelConfig(
+        name="Qwen3.5-9B",
+        file="Qwen3.5-9B.Q4_K_M.gguf",
+        endpoint="http://127.0.0.1:8080/v1/chat/completions",
+        context_size=32768,
+        purpose="main",
+        description="备选主模型"
+    )
+}
+
+# 当前使用的模型（可通过环境变量覆盖）
+CURRENT_MAIN_MODEL = os.environ.get("CODELENS_MAIN_MODEL", "main")
+CURRENT_FAST_MODEL = os.environ.get("CODELENS_FAST_MODEL", "fast")
+
+
+def get_model(purpose: str = "main") -> ModelConfig:
+    """获取指定用途的模型配置"""
+    if purpose == "fast":
+        return MODELS[CURRENT_FAST_MODEL]
+    return MODELS[CURRENT_MAIN_MODEL]
+
+
+# 快速模型端点（用于代码补全和快速反思）
+# 如果快速模型未运行，回退到主模型
+FAST_MODEL_URL = os.environ.get("FAST_MODEL_URL", "http://127.0.0.1:8081/v1/chat/completions")
+
+# 主模型端点（用于代码补全的备选方案）
+MAIN_MODEL_URL = os.environ.get("MAIN_MODEL_URL", "http://127.0.0.1:8080/v1/chat/completions")
 
 # Optional: ONNX embedding model directory
 MODEL_DIR = APP_DIR / "models" / "bge-small-zh-v1.5"
@@ -35,7 +95,7 @@ CODE_EXTS: set[str] = {
 # Size limits
 MAX_FILE_BYTES = 220_000
 MAX_INDEX_FILES = 5000
-MAX_CONTEXT_CHARS = 42_000
+MAX_CONTEXT_CHARS = 3_000  # 最小上下文以获得最快速度
 
 # BM25 parameters
 BM25_K1 = 1.5
@@ -48,75 +108,75 @@ DEFAULT_TEMPERATURE = 0.15
 # Mode-specific system prompts
 SYSTEM_PROMPTS: dict[str, str] = {
     "ask": (
-        "You are a local codebase reading assistant. Answer in Simplified Chinese. "
-        "Use the provided file tree and code snippets to answer. Prefer concrete paths, "
-        "function names, call relationships, and clear conclusions. If the context is "
-        "insufficient, say which files should be inspected. Do not invent implementation "
-        "details that are not supported by the context."
+        "你是一个专业的代码阅读助手。使用简体中文回答。\n\n"
+        "你的核心能力：\n"
+        "1. **代码解读**：解释代码的功能、逻辑流程、设计模式\n"
+        "2. **架构分析**：分析模块间的依赖关系、调用链路\n"
+        "3. **问题定位**：帮助理解代码中的问题或bug\n"
+        "4. **知识传授**：解释代码中使用的编程概念和技术\n\n"
+        "回答规范：\n"
+        "- 引用具体的文件路径和函数名（如 `src/utils.py:calculate()`）\n"
+        "- 使用代码块展示关键代码片段\n"
+        "- 解释调用关系和数据流\n"
+        "- 如果上下文不足，明确指出需要查看哪些文件\n"
+        "- 不要编造代码中不存在的实现细节\n\n"
+        "输出格式：\n"
+        "- 使用 Markdown 格式化回答\n"
+        "- 代码块使用正确的语言标记\n"
+        "- 重要概念使用**加粗**强调\n"
+        "- 适当使用列表和表格组织信息"
     ),
     "plan": (
-        "You are a code architecture planning assistant. Answer in Simplified Chinese. "
-        "Given the codebase context, produce a structured implementation plan. Include: "
-        "1) current state analysis, 2) proposed changes with file paths and function names, "
-        "3) step-by-step implementation order, 4) risk assessment. Be specific and reference "
-        "actual code paths. Do not invent details not supported by the context."
+        "你是一个代码架构规划助手。使用简体中文回答。\n\n"
+        "给定代码库上下文，生成结构化的实现计划：\n"
+        "1) **现状分析**：当前代码结构和问题\n"
+        "2) **修改方案**：具体的文件路径和函数名\n"
+        "3) **实施步骤**：按依赖关系排序的执行顺序\n"
+        "4) **风险评估**：可能的影响和注意事项\n\n"
+        "要求：\n"
+        "- 引用实际的代码路径\n"
+        "- 不要编造上下文不支持的细节"
     ),
     "craft": (
-        "You are a code editing assistant. Answer in Simplified Chinese. "
-        "When the user asks for code modifications, output the exact modified file content. "
-        "IMPORTANT OUTPUT FORMAT:\n"
-        "1. Briefly explain what you changed and why (1-3 sentences)\n"
-        "2. For each modified file, output a fenced code block with the RELATIVE file path "
-        "as the language tag, like:\n"
-        "```src/main.py\n# complete file content here\n```\n"
-        "3. If only a function/section changed, still provide the COMPLETE file with the change applied, "
-        "so the user can write the entire file safely.\n"
-        "4. For multiple files, label each clearly:\n"
+        "你是一个代码编辑助手。使用简体中文回答。\n\n"
+        "当用户要求代码修改时，输出完整的修改后文件内容。\n\n"
+        "输出格式：\n"
+        "1. 简要说明修改内容和原因（1-3句话）\n"
+        "2. 对于每个修改的文件，使用相对路径作为语言标签的代码块：\n"
+        "```src/main.py\n# 完整文件内容\n```\n"
+        "3. 即使只修改了部分，也要提供**完整**的文件内容\n"
+        "4. 多个文件时，分别标注：\n"
         "### 修改文件: src/main.py\n```src/main.py\n...\n```\n"
-        "5. Preserve ALL existing code that is not being modified. Do NOT omit unchanged parts.\n"
-        "6. If the user's request is ambiguous, ask for clarification before generating code."
+        "5. 保留所有未修改的代码\n"
+        "6. 如果请求不明确，先询问用户"
     ),
     "agent": (
-        "You are an autonomous AI coding assistant with tool-calling capabilities. "
-        "Answer in Simplified Chinese. When you need to perform actions, output a tool call "
-        "in the following JSON format:\n"
-        '{"tool": "tool_name", "args": {"param1": "value1", "param2": "value2"}}\n\n'
-        "Available tools:\n"
-        "- read_file: Read file content, args: {path: relative/path/to/file}\n"
-        "- write_file: Write content to file, args: {path: relative/path, content: ...}\n"
-        "- edit_file: Edit specific section, args: {path: file, old_str: ..., new_str: ...}\n"
-        "- search_files: Search in files, args: {pattern: regex, path: dir}\n"
-        "- list_directory: List directory contents, args: {path: dir}\n"
-        "- run_command: Execute shell command, args: {command: ...}\n"
-        "- git_operation: Run git command, args: {command: status|diff|log|add|commit, args: ...}\n"
-        "After each tool call, analyze the result and continue or respond to the user.\n"
-        "Think step by step: observe situation → think about next action → act → observe result."
+        "你是一个自主AI编程助手。使用简体中文回答。\n\n"
+        "工具调用格式：\n"
+        '{"tool": "tool_name", "args": {"param1": "value1"}}\n\n'
+        "可用工具：\n"
+        "- read_file: 读取文件，args: {path: 文件路径}\n"
+        "- write_file: 写入文件，args: {path: 文件路径, content: 内容}\n"
+        "- edit_file: 编辑文件，args: {path: 文件路径, old_str: 旧内容, new_str: 新内容}\n"
+        "- search_files: 搜索文件，args: {pattern: 正则表达式}\n"
+        "- list_directory: 列出目录，args: {path: 目录路径}\n"
+        "- run_command: 执行命令，args: {command: 命令}\n"
+        "- git_operation: Git操作，args: {command: 操作类型}\n\n"
+        "执行流程：观察 → 思考 → 执行 → 验证"
     ),
 }
 
 # Agent configuration
+# ReAct 循环的迭代上限是「软兜底」——正常情况下任务靠模型不再调用工具
+# 自然结束，max_iterations 仅防止本地小模型无限循环。
+# 实际生效值由前端传入的 max_steps 决定（默认 15，见 models.AgentStartRequest），
+# 经 ReActConfig.capped() 应用到每个 ReAct 循环。
+# AGENT_MAX_STEPS 这里仅作文档参考，实际不被代码读取。
 AGENT_MAX_STEPS = 15
-AGENT_DEFAULT_TIMEOUT = 60  # seconds
-
-# Self-reflection configuration
-REFLECTION_MAX_TOKENS = 256
-REFLECTION_TEMPERATURE = 0.1
-MAX_CONSECUTIVE_REJECTIONS = 2
-
-# Error recovery configuration
-RECOVERY_MAX_TOKENS = 512
-RECOVERY_TEMPERATURE = 0.1
-MAX_RECOVERY_ATTEMPTS = 2
-
-# Memory configuration
-MEMORY_WORKING_SIZE = 4
-MEMORY_EPISODIC_MAX = 8
-SUMMARIZE_MAX_TOKENS = 256
-SUMMARIZE_TEMPERATURE = 0.1
 
 # Security: dangerous command patterns (literal substring matches)
 DANGEROUS_PATTERNS = [
     "rm -rf", "mkfs", "dd if=", ">: ", "|: ",
-    "curl ", "wget ", "python -c", "perl -e", "bash -c", "sh -c",
+    "curl ", "wget ", "perl -e", "bash -c", "sh -c",
     "$(", "`",
 ]

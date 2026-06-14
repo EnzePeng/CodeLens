@@ -68,9 +68,9 @@ class TestTool(Tool):
 
         # Security check
         cmd_lower = cmd.lower()
-        for pattern in DANGEROUS_PATTERNS:
-            if pattern in cmd_lower:
-                raise SecurityError(f"Command not allowed: {pattern}")
+        for dangerous_pattern in DANGEROUS_PATTERNS:
+            if dangerous_pattern in cmd_lower:
+                raise SecurityError(f"Command not allowed: {dangerous_pattern}")
 
         work_dir = str(state.root)
         try:

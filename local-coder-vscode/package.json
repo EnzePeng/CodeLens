@@ -1,0 +1,143 @@
+{
+  "name": "local-coder-vscode",
+  "displayName": "Local Coder (本地模型补全)",
+  "description": "本地 llama.cpp + Qwen3.5 模型驱动的 VSCode 代码自动补全与注释生成插件 (FIM)。",
+  "version": "0.1.0",
+  "publisher": "local-coder",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Machine Learning",
+    "Programming Languages",
+    "Snippets"
+  ],
+  "keywords": [
+    "completion",
+    "copilot",
+    "llama.cpp",
+    "qwen",
+    "fim",
+    "local"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "localCoder.toggle",
+        "title": "Local Coder: 开启/关闭行内补全",
+        "category": "Local Coder"
+      },
+      {
+        "command": "localCoder.generateComment",
+        "title": "Local Coder: 为选中代码生成注释",
+        "category": "Local Coder"
+      },
+      {
+        "command": "localCoder.triggerCompletion",
+        "title": "Local Coder: 手动触发补全",
+        "category": "Local Coder"
+      },
+      {
+        "command": "localCoder.checkServer",
+        "title": "Local Coder: 检查模型服务连接",
+        "category": "Local Coder"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "localCoder.generateComment",
+        "key": "ctrl+alt+c",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "localCoder.triggerCompletion",
+        "key": "ctrl+alt+space",
+        "when": "editorTextFocus"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "localCoder.generateComment",
+          "when": "editorHasSelection",
+          "group": "1_modification@99"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Local Coder",
+      "properties": {
+        "localCoder.serverUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8080",
+          "description": "llama.cpp 服务的基础地址 (不含路径)，例如 http://127.0.0.1:8080"
+        },
+        "localCoder.enableInlineCompletion": {
+          "type": "boolean",
+          "default": true,
+          "description": "是否启用行内（ghost text）自动补全。"
+        },
+        "localCoder.debounceMs": {
+          "type": "number",
+          "default": 300,
+          "description": "触发补全前的防抖延迟（毫秒），数值越大请求越少。"
+        },
+        "localCoder.maxTokens": {
+          "type": "number",
+          "default": 128,
+          "description": "单次补全生成的最大 token 数。"
+        },
+        "localCoder.temperature": {
+          "type": "number",
+          "default": 0.2,
+          "description": "补全采样温度，越低越确定。"
+        },
+        "localCoder.maxPrefixChars": {
+          "type": "number",
+          "default": 3000,
+          "description": "发送给模型的光标前文本最大字符数。"
+        },
+        "localCoder.maxSuffixChars": {
+          "type": "number",
+          "default": 1000,
+          "description": "发送给模型的光标后文本最大字符数。"
+        },
+        "localCoder.timeoutMs": {
+          "type": "number",
+          "default": 8000,
+          "description": "单次补全请求的超时时间（毫秒）。"
+        },
+        "localCoder.disabledLanguages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "plaintext",
+            "markdown",
+            "scminput"
+          ],
+          "description": "不启用行内补全的语言 id 列表。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+    "watch": "npm run compile -- --sourcemap --watch",
+    "package": "npm run compile -- --minify",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.2",
+    "typescript": "^5.4.0"
+  }
+}

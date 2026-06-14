@@ -28,8 +28,8 @@ ALLOWED_COMMANDS: set[str] = {
     "powershell", "pwsh", "where", "get-content", "cls",
 }
 
-# Regex for safe commands (only alphanumeric, spaces, dots, hyphens, underscores)
-_SAFE_CMD_RE = re.compile(r'^[\w./ -]+$')
+# Regex for safe commands (allow more characters for flexibility)
+_SAFE_CMD_RE = re.compile(r'^[\w./\\ -]+$')
 
 MAX_OUTPUT_BYTES = 50_000
 
@@ -45,7 +45,9 @@ class RunCommandTool(Tool):
         "timeout": {"type": "integer", "description": "Timeout in seconds (default: 60)"},
     }
 
-    def execute(self, command: str, cwd: str = "", timeout: int = 60, **kwargs) -> str:
+    def execute(self, command: str = "", cwd: str = "", timeout: int = 60, **kwargs) -> str:
+        if not command:
+            raise ToolExecutionError("Missing required argument: command")
         cmd_lower = command.lower()
         for pattern in DANGEROUS_PATTERNS:
             if pattern in cmd_lower:

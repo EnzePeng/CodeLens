@@ -17,7 +17,7 @@ class ListDirectoryTool(Tool):
     """List directory contents with optional recursion."""
     
     name = "list_directory"
-    description = "List contents of a directory, showing files and subdirectories."
+    description = "列出目录中的文件和子目录。"
     parameters = {
         "path": {
             "type": "string",
@@ -51,11 +51,25 @@ class ListDirectoryTool(Tool):
         
         # Resolve directory
         if path:
-            target_dir = (state.root / path).resolve()
-            try:
-                target_dir.relative_to(state.root.resolve())
-            except ValueError:
-                raise SecurityError("Path is outside the repository root")
+            # Handle both absolute and relative paths from LLM
+            p = Path(path)
+            if p.is_absolute():
+                try:
+                    target_dir = p.resolve()
+                    target_dir.relative_to(state.root.resolve())
+                except ValueError:
+                    # Try stripping repo root prefix
+                    try:
+                        rel = p.resolve().relative_to(state.root.resolve())
+                        target_dir = state.root / rel
+                    except ValueError:
+                        raise SecurityError("Path is outside the repository root")
+            else:
+                target_dir = (state.root / path).resolve()
+                try:
+                    target_dir.relative_to(state.root.resolve())
+                except ValueError:
+                    raise SecurityError("Path is outside the repository root")
         else:
             target_dir = state.root
         
@@ -90,9 +104,12 @@ class ListDirectoryTool(Tool):
                         lines.extend(list_dir(entry, depth + 1, prefix + connector))
                 elif include_files:
                     ext = entry.suffix.lower()
-                    icon = "📄" if ext in CODE_EXTS else "📄"
-                    size = entry.stat().st_size
-                    size_str = f" ({size:,} bytes)" if size < 100000 else ""
+                    icon = "[py]" if ext == ".py" else "[code]" if ext in CODE_EXTS else "[file]"
+                    try:
+                        size = entry.stat().st_size
+                        size_str = f" ({size:,} bytes)" if size < 100000 else ""
+                    except OSError:
+                        size_str = ""
                     lines.append(f"{prefix}{current_prefix}{icon} {entry.name}{size_str}")
             
             return lines

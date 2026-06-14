@@ -28,7 +28,9 @@ class ProjectTool(Tool):
         },
     }
 
-    def execute(self, operation: str, path: str = "", **kwargs) -> str:
+    def execute(self, operation: str = "", path: str = "", **kwargs) -> str:
+        if not operation:
+            raise FileAccessError("Missing required argument: operation")
         if state.root is None:
             raise FileAccessError("No repository folder set")
 

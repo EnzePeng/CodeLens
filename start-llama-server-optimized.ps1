@@ -12,13 +12,18 @@ if (-not (Test-Path $Model)) {
     throw "Model not found: $Model"
 }
 
+# 优化GPU配置 - 减少上下文以提高速度
 & $Server `
     -m $Model `
     -ngl 999 `
-    -c 32768 `
+    -c 16384 `
     --host 127.0.0.1 `
     --port 8080 `
     --jinja `
     --reasoning-format none `
-    --cache-type-k q4_0 `
-    --cache-reuse 3000
+    --cache-type-k q8_0 `
+    --cache-type-v q8_0 `
+    --cache-reuse 4000 `
+    --parallel 2 `
+    --batch-size 512 `
+    --ubatch-size 256

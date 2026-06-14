@@ -16,5 +16,9 @@ from core.tools import file_operations  # noqa: F401
 from core.tools import code_analysis  # noqa: F401
 from core.tools import test  # noqa: F401
 from core.tools import project  # noqa: F401
+# New Claude Code-style tools
+from core.tools import glob_tool  # noqa: F401
+from core.tools import grep_tool  # noqa: F401
+from core.tools import lsp_tool  # noqa: F401
 
 __all__ = ["Tool", "ToolDefinition", "ToolRegistry", "register_tool"]

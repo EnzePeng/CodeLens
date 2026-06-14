@@ -7,6 +7,7 @@ Improvements:
 from __future__ import annotations
 
 import difflib
+import os
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,10 @@ class EditFileTool(Tool):
         "all_occurrences": {"type": "boolean", "description": "Replace all occurrences (default: false)"},
     }
 
-    def execute(self, path: str, old_str: str, new_str: str, all_occurrences: bool = False, **kwargs) -> str:
+    def execute(self, path: str = "", old_str: str = "", new_str: str = "", all_occurrences: bool = False, **kwargs) -> str:
+        missing = [k for k, v in {"path": path, "old_str": old_str, "new_str": new_str}.items() if not v]
+        if missing:
+            raise FileAccessError(f"Missing required arguments: {', '.join(missing)}")
         if state.root is None:
             raise FileAccessError("No repository folder set")
 
@@ -45,10 +49,11 @@ class EditFileTool(Tool):
             raise FileAccessError(f"File not found: {path}")
 
         try:
-            content = target.read_text(encoding="utf-8", errors="replace")
+            old_content = target.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
             raise FileAccessError(f"Read failed: {e}")
 
+        content = old_content
         if old_str in content:
             count = 0 if all_occurrences else 1
             new_content = content.replace(old_str, new_str, count)
@@ -66,9 +71,23 @@ class EditFileTool(Tool):
             )
 
         try:
-            target.write_text(new_content, encoding="utf-8")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # Atomic write: write to temp file then rename
+            temp_path = target.with_suffix(target.suffix + ".tmp")
+            temp_path.write_text(new_content, encoding="utf-8")
+            os.replace(str(temp_path), str(target))
         except OSError as e:
+            # Clean up temp file on failure
+            try:
+                target.with_suffix(target.suffix + ".tmp").unlink(missing_ok=True)
+            except OSError:
+                pass
             raise FileAccessError(f"Write failed: {e}")
+
+        # Record edit for undo
+        from core.tools.undo_edit import get_undo_manager
+        undo_mgr = get_undo_manager()
+        undo_mgr.record_edit(path, old_content, new_content, "edit_file")
 
         old_lines = len(old_str.splitlines())
         new_lines = len(new_str.splitlines())

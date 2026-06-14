@@ -27,7 +27,9 @@ class WriteFileTool(Tool):
         "content": {"type": "string", "description": "File content to write"},
     }
 
-    def execute(self, path: str, content: str, **kwargs) -> str:
+    def execute(self, path: str = "", content: str = "", **kwargs) -> str:
+        if not path or not content:
+            raise FileAccessError(f"Missing required arguments: {'path' if not path else 'content'}")
         if state.root is None:
             raise FileAccessError("No repository folder set")
 
