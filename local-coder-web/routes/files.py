@@ -18,7 +18,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
-from config import APP_DIR, IGNORE_DIRS, CODE_EXTS, MAX_FILE_BYTES, MAX_INDEX_FILES
+from config import APP_DIR, BASE_DIR, IGNORE_DIRS, CODE_EXTS, MAX_FILE_BYTES, MAX_INDEX_FILES
 from models import state, HealthResponse, IndexStatsResponse, FolderRequest, ReadFileRequest, BrowseRequest, CraftApplyRequest, ExecRequest
 from services.indexer import index_folder, build_tree, scan_repo
 from services.search import _search_cache
@@ -222,7 +222,7 @@ def exec_command(req: ExecRequest) -> dict:
     elif state.root is not None:
         cwd = str(state.root.resolve())
     else:
-        cwd = str(APP_DIR)
+        cwd = str(BASE_DIR)
 
     try:
         result = subprocess.run(

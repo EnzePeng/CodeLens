@@ -16,13 +16,13 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from config import APP_DIR
+from config import APP_DIR, BASE_DIR
 from logger import logger
 from models import state
 
 # ---- Optional ONNX model loading ----
 
-MODEL_DIR = APP_DIR / "models" / "bge-small-zh-v1.5"
+MODEL_DIR = BASE_DIR / "models" / "bge-small-zh-v1.5"
 _ort_session = None
 _ort_tokenizer = None
 

@@ -5,11 +5,24 @@ Configuration constants for local-coder-web.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from dataclasses import dataclass
 
 # Application directory
-APP_DIR = Path(__file__).resolve().parent
+# When frozen by PyInstaller, __file__ points inside the temp extraction dir.
+# APP_DIR is used for bundled resources (static files, ONNX models).
+if getattr(sys, "frozen", False):
+    APP_DIR = Path(sys._MEIPASS)
+else:
+    APP_DIR = Path(__file__).resolve().parent
+
+# BASE_DIR is the directory containing the exe (or the project root in dev mode).
+# Used for runtime files: config.ini, models/, llama-server/
+if getattr(sys, "frozen", False):
+    BASE_DIR = Path(sys.executable).parent
+else:
+    BASE_DIR = Path(__file__).resolve().parent.parent
 
 # LLM endpoint
 LLAMA_URL = os.environ.get("LLAMA_URL", "http://127.0.0.1:8080/v1/chat/completions")
@@ -74,7 +87,7 @@ FAST_MODEL_URL = os.environ.get("FAST_MODEL_URL", "http://127.0.0.1:8081/v1/chat
 MAIN_MODEL_URL = os.environ.get("MAIN_MODEL_URL", "http://127.0.0.1:8080/v1/chat/completions")
 
 # Optional: ONNX embedding model directory
-MODEL_DIR = APP_DIR / "models" / "bge-small-zh-v1.5"
+MODEL_DIR = BASE_DIR / "models" / "bge-small-zh-v1.5"
 
 # File scanning configuration
 IGNORE_DIRS: set[str] = {
