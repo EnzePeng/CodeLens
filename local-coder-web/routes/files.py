@@ -74,6 +74,8 @@ def set_folder(req: FolderRequest) -> dict:
     state.idf = result["idf"]
     state.avg_dl = result["avg_dl"]
     state.dep_graph = result.get("dep_graph")
+    state.code_graph = result.get("code_graph")
+    state.project_brief = result.get("project_brief")
     state.embedding_ready = result["embedding_mode"] == "onnx"
 
     return {
@@ -98,6 +100,8 @@ def reindex() -> dict:
     state.idf = result["idf"]
     state.avg_dl = result["avg_dl"]
     state.dep_graph = result.get("dep_graph")
+    state.code_graph = result.get("code_graph")
+    state.project_brief = result.get("project_brief")
     state.embedding_ready = result["embedding_mode"] == "onnx"
 
     return {

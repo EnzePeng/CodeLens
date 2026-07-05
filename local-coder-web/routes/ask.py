@@ -39,9 +39,36 @@ async def _stream_llama(
     """
     Stream LLM response in SSE format matching frontend expectations:
       - sources event with referenced file info
+      - context_plan/evidence/confidence events for project-understanding UI
       - delta events with content chunks
       - done event with accumulated answer at end
     """
+    if context_info:
+        yield _sse({
+            "type": "context_plan",
+            "strategy": "hybrid_search_with_evidence",
+            "files": [item.get("path", "") for item in context_info[:10]],
+            "message": "已选择最相关的代码文件作为只读上下文。",
+        })
+        yield _sse({
+            "type": "evidence",
+            "evidence": [
+                {
+                    "path": item.get("path", ""),
+                    "start_line": item.get("start_line", 1),
+                    "end_line": item.get("end_line", 1),
+                    "symbol": item.get("symbol", ""),
+                    "reason": item.get("reason", "selected context"),
+                }
+                for item in context_info[:10]
+            ],
+        })
+        yield _sse({
+            "type": "confidence",
+            "level": "medium" if len(context_info) < 3 else "high",
+            "reason": f"基于 {len(context_info)} 个上下文来源。",
+        })
+
     # Yield context/sources event first
     if context_info:
         yield _sse({"type": "sources", "sources": context_info})
@@ -197,9 +224,14 @@ async def ask(req: AskRequest):
             context_chunks.append(f"Code context:\n{context}")
             # Build sources info for frontend
             for cf in selected[:10]:
+                symbol = cf.symbols[0] if cf.symbols else ""
                 context_sources.append({
                     "path": cf.rel,
                     "size": cf.size,
+                    "start_line": 1,
+                    "end_line": min(len(cf.text.splitlines()), 80),
+                    "symbol": symbol,
+                    "reason": "matched ask query",
                 })
 
     if req.mode == "craft" and req.file_path and req.new_content:

@@ -56,7 +56,6 @@ packages = ["routes", "core", "services", "models"]
 "config.py" = "config.py"
 "exceptions.py" = "exceptions.py"
 "logger.py" = "logger.py"
-"settings.py" = "settings.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

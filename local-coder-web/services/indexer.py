@@ -35,6 +35,8 @@ from models import CodeFile
 from services.search import (
     DependencyGraph, _search_cache, build_bm25_index, set_onnx_session,
 )
+from services.code_graph import build_code_graph
+from services.project_intel import build_project_brief
 
 
 # ---- File hashing for incremental updates (#11) ----
@@ -321,6 +323,9 @@ def index_folder(root: Path) -> dict:
     # #6,#7 Dependency graph
     dep_graph = DependencyGraph(files)
 
+    # Project understanding graph (symbol/import/call evidence)
+    code_graph = build_code_graph(files)
+
     # Tree
     tree = build_tree(root, files)
 
@@ -362,6 +367,8 @@ def index_folder(root: Path) -> dict:
         "file_count": len(files),
         "embedding_mode": embedding_mode,
         "dep_graph": dep_graph,
+        "code_graph": code_graph,
+        "project_brief": build_project_brief(root, files, code_graph),
         "index_time": round(elapsed, 2),
         "mode": mode,
     }

@@ -195,7 +195,7 @@
       </section>
 
       <!-- Workspace -->
-      <section class="workspace" id="workspace" data-mode="ask">
+      <section class="workspace" id="workspace" data-mode="overview">
         <!-- Header bar -->
         <div class="workspace-header">
           <div class="workspace-title">
@@ -203,7 +203,7 @@
               <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
             </svg>
             <span id="workspaceTitle">CodeLens</span>
-            <span id="workspaceMode" class="workspace-mode-badge">Ask</span>
+            <span id="workspaceMode" class="workspace-mode-badge">Overview</span>
           </div>
           <div class="workspace-actions">
             <button id="clearBtn" type="button" class="icon-btn" title="清空对话">
@@ -221,8 +221,49 @@
 
         <!-- Main content area: three mutually-exclusive views -->
         <div class="workspace-content">
+          <!-- View 0: Project overview workbench -->
+          <div class="view view-overview active" id="viewOverview">
+            <section class="overview-main">
+              <div class="overview-header">
+                <div>
+                  <h2>Project Overview</h2>
+                  <p id="overviewSubtitle">加载代码库后自动生成项目全景、入口点、模块职责和推荐阅读路径。</p>
+                </div>
+                <button id="refreshBriefBtn" type="button" class="secondary-btn">刷新全景</button>
+              </div>
+              <div id="overviewContent" class="overview-content">
+                <div class="empty-state">选择代码文件夹后，这里会显示项目全景报告。</div>
+              </div>
+            </section>
+            <aside class="evidence-panel">
+              <div class="evidence-header">Evidence</div>
+              <div id="evidenceList" class="evidence-list">
+                <div class="empty-state compact">暂无证据来源。</div>
+              </div>
+            </aside>
+          </div>
+
+          <!-- View 0b: File Lens -->
+          <div class="view view-file-lens" id="viewFileLens">
+            <section class="file-lens-main">
+              <div class="overview-header">
+                <div>
+                  <h2>File Lens</h2>
+                  <p>输入相对路径，查看 imports、被引用方、调用关系、测试和配置。</p>
+                </div>
+              </div>
+              <div class="file-lens-form">
+                <input id="fileLensPathInput" spellcheck="false" placeholder="例如 local-coder-web/core/react.py 或 core/react.py" />
+                <button id="fileLensBtn" type="button" class="secondary-btn">解析文件</button>
+              </div>
+              <div id="fileLensContent" class="file-lens-content">
+                <div class="empty-state">选择左侧文件或输入路径后开始解析。</div>
+              </div>
+            </section>
+          </div>
+
           <!-- View 1: Chat (for ask/plan/craft modes) -->
-          <div class="view view-chat active" id="viewChat">
+          <div class="view view-chat" id="viewChat">
             <div id="messages" class="messages">
               <article class="message assistant">
                 <div class="message-avatar">
@@ -374,17 +415,20 @@
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <polyline points="20 6 9 17 4 12"/>
                     </svg>
-                    <span>最终报告</span>
-                    <button id="outputFullscreenBtn" type="button" class="icon-btn" title="全屏查看">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>
-                      </svg>
-                    </button>
-                    <button id="copyResultBtn" class="icon-btn" title="复制">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-                      </svg>
-                    </button>
+                    <span>&#26368;&#32456;&#25253;&#21578;</span>
+                    <div class="agent-output-actions">
+                      <button id="outputFullscreenBtn" type="button" class="agent-read-btn" title="&#20840;&#23631;&#38405;&#35835;">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>
+                        </svg>
+                        <span>&#20840;&#23631;&#38405;&#35835;</span>
+                      </button>
+                      <button id="copyResultBtn" class="icon-btn" title="&#22797;&#21046;">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                        </svg>
+                      </button>
+                    </div>
                   </div>
                   <div id="agentOutputContent" class="agent-output-content markdown"></div>
                 </div>
@@ -456,10 +500,11 @@
         <form id="askForm" class="composer">
           <div class="composer-row">
             <select id="modeSelect" class="mode-select" title="模式">
-              <option value="ask">💬 Ask</option>
-              <option value="plan">📋 Plan</option>
-              <option value="craft">✏️ Craft</option>
-              <option value="agent">🤖 Agent</option>
+              <option value="overview">Overview</option>
+              <option value="ask">Ask</option>
+              <option value="file_lens">File Lens</option>
+              <option value="risks">Risks</option>
+              <option value="agent">Agent</option>
             </select>
             <div class="input-wrapper">
               <textarea id="questionInput" rows="1" placeholder="输入问题..." disabled></textarea>
@@ -504,6 +549,8 @@
       </div>
     </div>
 
-    <script src="/static/app.js?v=20260614d"></script>
+    <script src="/static/js/api.js?v=20260705a"></script>
+    <script src="/static/app.js?v=20260705a"></script>
+    <script src="/static/js/workbench.js?v=20260705a"></script>
   </body>
 </html>

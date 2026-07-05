@@ -2,8 +2,11 @@
 # local-coder-web .gitignore
 # =============================================================================
 
-# ONNX embedding models (large binary files, download separately)
-models/
+# ONNX embedding models (large binary files, download separately).
+# Keep the Python package tracked; ignore model payloads below it.
+models/*
+!models/
+!models/__init__.py
 
 # Python
 __pycache__/

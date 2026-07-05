@@ -235,12 +235,13 @@ def _parse_tool_calls(text: str) -> list[dict[str, Any]]:
 # ---- 重复/循环检测 ----
 
 def _is_repetitive(text: str) -> bool:
-    """检测流式生成是否进入重复模式（如 "aaa" 或短语循环）。"""
+    """Detect obvious stream loops without penalizing repeated report terms."""
     if len(text) < 60:
         return False
 
     words = text.split()
-    # 1. 单词连续 5+ 次（放宽阈值，避免误报代码中的重复模式）
+
+    # Single token repeated many times is almost always a stuck stream.
     if len(words) >= 5:
         for i in range(len(words) - 4):
             w = words[i].lower().strip(".,;:!?\"'`")
@@ -252,18 +253,23 @@ def _is_repetitive(text: str) -> bool:
                 words[i+4].lower().strip(".,;:!?\"'`")):
                 return True
 
-    # 2. 2-gram/3-gram 循环 4+ 次（仅检查尾部，避免历史内容误报）
-    tail_words = words[-24:]  # 只检查最后 24 个单词
+    # Tail n-gram loops must be contiguous. Reports often repeat useful
+    # phrases such as "Agent mode" or "final report" in normal prose.
+    tail_words = words[-24:]
     if len(tail_words) >= 6:
         for n in [2, 3]:
             if len(tail_words) >= n * 4:
-                for start in range(len(tail_words) - n * 4 + 1):
-                    chunk = " ".join(tail_words[start:start+n]).lower()
-                    count = 0
-                    for j in range(start, len(tail_words) - n + 1):
-                        if " ".join(tail_words[j:j+n]).lower() == chunk:
-                            count += 1
-                    if count >= 4:  # 提高阈值到 4 次，减少误报
+                for start_idx in range(len(tail_words) - n * 4 + 1):
+                    chunk = [w.lower().strip(".,;:!?\"'`") for w in tail_words[start_idx:start_idx+n]]
+                    repeats = 1
+                    pos = start_idx + n
+                    while pos + n <= len(tail_words):
+                        candidate = [w.lower().strip(".,;:!?\"'`") for w in tail_words[pos:pos+n]]
+                        if candidate != chunk:
+                            break
+                        repeats += 1
+                        pos += n
+                    if repeats >= 4:
                         return True
     return False
 

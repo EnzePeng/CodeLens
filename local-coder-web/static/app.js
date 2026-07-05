@@ -85,7 +85,7 @@ if (typeof window.__codelens_ready__ === "undefined") {
 
 /* ─── State ───────────────────────────────────────────────────── */
 let isBusy = false;
-let currentMode = "ask";
+let currentMode = "overview";
 let messageHistory = JSON.parse(localStorage.getItem("codelens-chat-history") || "[]");
 
 function saveChatHistory() {
@@ -158,24 +158,30 @@ if (modeSelect) {
     // Update mode badge
     const badge = document.getElementById("workspaceMode");
     if (badge) {
-      const labels = { ask: "Ask", plan: "Plan", craft: "Craft", agent: "Agent" };
-      badge.textContent = labels[currentMode] || "Ask";
+      const labels = { overview: "Overview", ask: "Ask", file_lens: "File Lens", risks: "Risks", agent: "Agent" };
+      badge.textContent = labels[currentMode] || "Overview";
     }
     // Switch views: agent mode → view-agent; else → view-chat
     const viewChat = document.getElementById("viewChat");
     const viewAgent = document.getElementById("viewAgent");
+    const viewOverview = document.getElementById("viewOverview");
+    const viewFileLens = document.getElementById("viewFileLens");
+    [viewChat, viewAgent, viewOverview, viewFileLens].forEach(v => v && v.classList.remove("active"));
     if (currentMode === "agent") {
-      viewChat && viewChat.classList.remove("active");
       viewAgent && viewAgent.classList.add("active");
+    } else if (currentMode === "overview" || currentMode === "risks") {
+      viewOverview && viewOverview.classList.add("active");
+    } else if (currentMode === "file_lens") {
+      viewFileLens && viewFileLens.classList.add("active");
     } else {
-      viewAgent && viewAgent.classList.remove("active");
       viewChat && viewChat.classList.add("active");
     }
     const hints = {
+      overview: "加载代码库后先查看项目全景；也可以输入问题切到 Ask。",
       ask:   "输入你的代码问题… (Enter 发送 / Shift+Enter 换行)",
-      plan:  "描述你需要规划的功能或架构… (Enter 发送)",
-      craft: "描述你要做的代码修改，我将生成完整文件… (Enter 发送)",
-      agent: "描述你想要完成的任务，Agent 将自主执行多步操作… (Enter 发送)",
+      file_lens: "输入要解析的相对文件路径… (Enter 解析)",
+      risks: "查看项目风险；输入问题会进入 Ask。",
+      agent: "高风险模式：描述要完成的任务，Agent 将自主执行多步操作…",
     };
     if (questionInput) questionInput.placeholder = hints[currentMode] || hints.ask;
     // askBtn is an SVG button, not text; keep as is
@@ -1155,22 +1161,24 @@ if (setFolderBtn) {
     setBusy(true);
     setFolderBtn.textContent = "索引中…";
     try {
-      const resp = await fetch("/api/set-folder", {
+      const resp = await fetch("/api/index/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path }),
       });
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+      const statusResp = await fetch("/api/status");
+      const statusData = await statusResp.json().catch(() => ({}));
 
       if (folderStatus) {
-        folderStatus.textContent = data.folder;
+        folderStatus.textContent = statusData.folder || path;
         folderStatus.dataset.ready = "1";
       }
-      if (fileCount) fileCount.textContent = String(data.file_count);
-      if (embeddingMode) embeddingMode.textContent = data.embedding_mode === "onnx" ? "ONNX 语义" : "BM25";
+      if (fileCount) fileCount.textContent = String(data.file_count || statusData.file_count || 0);
+      if (embeddingMode) embeddingMode.textContent = statusData.embedding_mode === "onnx" ? "ONNX 语义" : "BM25";
       try {
-        const treeData = typeof data.tree === "string" ? JSON.parse(data.tree) : data.tree;
+        const treeData = typeof statusData.tree === "string" ? JSON.parse(statusData.tree) : statusData.tree;
         updateTreeView(treeData);
       } catch (treeErr) {
         console.error("[CodeLens] Tree parse error:", treeErr);
@@ -1179,7 +1187,14 @@ if (setFolderBtn) {
       // Always enable input after successful folder load
       if (questionInput) questionInput.disabled = false;
       if (askBtn) askBtn.disabled = false;
-      addInfoMessage(`已索引 ${data.file_count} 个文件，搜索模式：${data.embedding_mode === "onnx" ? "ONNX 语义搜索" : "BM25 增强搜索"}。`);
+      if (window.CodeLensWorkbench && typeof window.CodeLensWorkbench.loadProjectBrief === "function") {
+        await window.CodeLensWorkbench.loadProjectBrief();
+      }
+      if (modeSelect) {
+        modeSelect.value = "overview";
+        modeSelect.dispatchEvent(new Event("change"));
+      }
+      addInfoMessage(`已索引 ${data.file_count || statusData.file_count || 0} 个文件，项目全景已生成。`);
     } catch (err) {
       addInfoMessage(`设置失败：${err.message}`);
     } finally {
@@ -1211,6 +1226,10 @@ if (askForm) {
     if (currentMode === "agent") {
       addUserMessage(question);
       await startAgentTask(question);
+    } else if (currentMode === "file_lens") {
+      if (window.CodeLensWorkbench && typeof window.CodeLensWorkbench.loadFileLens === "function") {
+        await window.CodeLensWorkbench.loadFileLens(question);
+      }
     } else {
       addUserMessage(question);
       await streamAsk(question);
@@ -2896,6 +2915,60 @@ function v2RenderMarkdown(md) {
   return `<pre style="white-space:pre-wrap">${agentEsc(md)}</pre>`;
 }
 
+function renderAgentFinalResult(resultText, options = {}) {
+  const outputEl = document.getElementById("agentOutput");
+  const content = document.getElementById("agentOutputContent");
+  const sideCol = document.getElementById("agentSideCol");
+  const body = document.querySelector(".agent-body");
+  const mainCol = document.getElementById("agentMainCol");
+  const stream = document.getElementById("agentStream");
+  const thinkingBlock = document.getElementById("agentThinking");
+  if (!outputEl || !content) return;
+
+  const markdown = String(resultText || "\u6682\u65e0\u7ed3\u679c\u3002");
+  if (body) {
+    body.style.gridTemplateColumns = "";
+    body.classList.add("result-focus");
+  }
+  if (sideCol) {
+    sideCol.style.display = "";
+    sideCol.classList.add("result-hidden");
+  }
+  if (stream && options.collapseStream !== false) {
+    stream.querySelectorAll(".agent-card").forEach(c => c.classList.add("collapsed"));
+    stream.querySelectorAll(".subtask-section").forEach(s => s.classList.add("collapsed"));
+  }
+  if (thinkingBlock) thinkingBlock.classList.add("collapsed");
+
+  outputEl.classList.remove("hidden");
+  outputEl.classList.add("reading-mode");
+  content.innerHTML = v2RenderMarkdown(markdown);
+
+  if (stream && outputEl.parentElement === mainCol && mainCol.firstElementChild !== outputEl) {
+    mainCol.insertBefore(outputEl, stream);
+  }
+
+  outputEl.classList.remove("just-arrived");
+  void outputEl.offsetWidth;
+  outputEl.classList.add("just-arrived");
+
+  setTimeout(() => {
+    if (mainCol) {
+      mainCol.scrollTo({ top: 0, behavior: "smooth" });
+    } else {
+      outputEl.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, 80);
+
+  const copyBtn = document.getElementById("copyResultBtn");
+  if (copyBtn) {
+    copyBtn.onclick = () => {
+      navigator.clipboard.writeText(markdown).catch(() => {});
+      copyBtn.title = "\u5df2\u590d\u5236";
+    };
+  }
+}
+
 // ---- phase bar ----
 
 let agentCurrentPhase = null;
@@ -2978,6 +3051,18 @@ function resetAgentRenderer() {
   agentThinkingLen = 0;
   agentTodoItems.clear();
   resetToolGrouping();
+  const body = document.querySelector(".agent-body");
+  const sideCol = document.getElementById("agentSideCol");
+  const outputEl = document.getElementById("agentOutput");
+  if (body) {
+    body.style.gridTemplateColumns = "";
+    body.classList.remove("result-focus");
+  }
+  if (sideCol) {
+    sideCol.style.display = "";
+    sideCol.classList.remove("result-hidden");
+  }
+  if (outputEl) outputEl.classList.add("hidden");
   // I2: clear subtask section state
   currentSubtaskBody = null;
   currentSubtaskHeader = null;
@@ -3193,51 +3278,12 @@ function handleAgentEvent(data) {
     if (agentTodoItems.has("virtual-root")) {
       upsertTodo("virtual-root", null, "done", "完成");
     }
-    const outputEl = document.getElementById("agentOutput");
-    const content = document.getElementById("agentOutputContent");
-    const sideCol = document.getElementById("agentSideCol");
-    const body = document.querySelector(".agent-body");
-    // Hide the side column to give full width to the result
-    if (sideCol && body) {
-      sideCol.style.display = "none";
-      body.style.gridTemplateColumns = "1fr";
-    }
-    // Collapse all stream cards to reduce noise around the final result
-    const stream = document.getElementById("agentStream");
-    if (stream) {
-      stream.querySelectorAll(".agent-card").forEach(c => c.classList.add("collapsed"));
-      stream.querySelectorAll(".subtask-section").forEach(s => s.classList.add("collapsed"));
-    }
-    // Collapse thinking block
-    const thinkingBlock = document.getElementById("agentThinking");
-    if (thinkingBlock) thinkingBlock.classList.add("collapsed");
-    if (outputEl && content) {
-      outputEl.classList.remove("hidden");
-      // Full markdown render via marked.js + highlight.js
-      content.innerHTML = v2RenderMarkdown(data.result || "");
-      // Flash animation to draw attention
-      outputEl.classList.remove("just-arrived");
-      // Force reflow so animation restarts
-      void outputEl.offsetWidth;
-      outputEl.classList.add("just-arrived");
-      // Scroll output into view
-      setTimeout(() => {
-        outputEl.scrollIntoView({ behavior: "smooth", block: "start" });
-      }, 100);
-    }
+    renderAgentFinalResult(data.result || "");
     setPhase("done");
     setAgentStatus("done", null);
     stopAgentHeartbeat();
     // Reindex files after task completes (file tree may have changed)
     refreshFileTree();
-    // Wire copy button
-    const copyBtn = document.getElementById("copyResultBtn");
-    if (copyBtn) {
-      copyBtn.onclick = () => {
-        navigator.clipboard.writeText(data.result || "").catch(() => {});
-        copyBtn.title = "已复制";
-      };
-    }
     // Refresh history list (E3)
     if (typeof loadAgentHistory === "function") loadAgentHistory();
     return;
@@ -3614,16 +3660,8 @@ async function viewTaskResult(taskId) {
     const resp = await fetch(`/api/agent/status/${taskId}`);
     if (!resp.ok) return;
     const data = await resp.json();
-    const outputEl = document.getElementById("agentOutput");
-    const content = document.getElementById("agentOutputContent");
-    if (!outputEl || !content) return;
-    outputEl.classList.remove("hidden");
-    const resultText = data.result || "(无结果)";
-    content.innerHTML = v2RenderMarkdown(resultText);
-    outputEl.classList.remove("just-arrived");
-    void outputEl.offsetWidth;
-    outputEl.classList.add("just-arrived");
-    setTimeout(() => outputEl.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
+    const resultText = data.result || "\u6682\u65e0\u7ed3\u679c\u3002";
+    renderAgentFinalResult(resultText, { collapseStream: false });
     // Highlight the selected history item
     document.querySelectorAll(".agent-history-item").forEach(el => el.classList.remove("selected"));
     const sel = document.querySelector(`.agent-history-item[data-task-id="${taskId}"]`);
@@ -3713,7 +3751,7 @@ function closeAgentFullscreen() {
     reportBtn.addEventListener("click", () => {
       const content = document.getElementById("agentOutputContent");
       if (!content) return;
-      openAgentFullscreen("最终报告", content.innerHTML, "markdown");
+      openAgentFullscreen("\u6700\u7ec8\u62a5\u544a", content.innerHTML, "markdown");
     });
   }
   // Close button
